@@ -25,6 +25,10 @@ from .api_eval import router as eval_router
 from .api_plans import router as plans_router
 from .api_release import router as release_router
 from .api_specs import router as specs_router
+from .api_jira_board import router as jira_board_router
+from .api_github import router as github_router
+from .api_system import router as system_router
+from .api_integrations import router as integrations_router
 from .api_obs import router as obs_router
 from .store import build_store
 
@@ -74,6 +78,10 @@ app.include_router(plans_router)
 app.include_router(release_router)
 app.include_router(specs_router)
 app.include_router(obs_router)
+app.include_router(jira_board_router)
+app.include_router(github_router)
+app.include_router(system_router)
+app.include_router(integrations_router)
 
 
 @app.get("/healthz")

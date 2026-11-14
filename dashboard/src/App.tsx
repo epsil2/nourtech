@@ -2,8 +2,14 @@ import { useEffect, useState } from "react";
 import { Sidebar, NAV } from "./components/Sidebar";
 import type { PageKey } from "./components/Sidebar";
 import { Agents } from "./pages/Agents";
+import { Backlog } from "./pages/Backlog";
+import { GitHub } from "./pages/GitHub";
+import { Integrations } from "./pages/Integrations";
+import { Monitoring } from "./pages/Monitoring";
 import { Overview } from "./pages/Overview";
+import { Releases } from "./pages/Releases";
 import { Soon } from "./pages/Soon";
+import { Sprints } from "./pages/Sprints";
 import { api } from "./lib/api";
 
 function readHash(): PageKey {
@@ -49,12 +55,12 @@ export default function App() {
       <main>
         {page === "overview" && <Overview onNewAgent={() => go("agents")} />}
         {page === "agents" && <Agents />}
-        {page === "backlog" && <Soon title="Backlog Jira" sprint="Sprint 3" body="Epics, Features, Stories et Tasks du projet SCRUM lus en direct — et créés uniquement après votre approbation explicite." />}
-        {page === "sprints" && <Soon title="Sprints" sprint="Sprint 4" body="Avancement par sprint, stories bloquées, dépendances et reste-à-faire, aligné sur le board 1." />}
-        {page === "github" && <Soon title="GitHub" sprint="Sprint 4" body="Dépôts, branches liées aux clés Jira, commits et pull requests avec statut de revue." />}
-        {page === "releases" && <Soon title="CI/CD & Releases" sprint="Sprint 5" body="Builds, tests, environnements DEV → QA → PRE-PROD → PROD, historique de déploiement et rollback. La promotion en prod reste soumise à votre Go/No-Go." />}
-        {page === "monitoring" && <Soon title="Monitoring & KPI" sprint="Sprint 6" body="Exécutions, taux de succès, durées, consommation de jetons, coûts et erreurs API — calculés depuis la base, jamais estimés." />}
-        {page === "settings" && <Soon title="Intégrations & réglages" sprint="Sprint 7" body="Jira, GitHub, fournisseurs LLM, credentials et permissions. Les secrets resteront côté serveur, jamais dans le frontend." />}
+        {page === "backlog" && <Backlog />}
+        {page === "sprints" && <Sprints />}
+        {page === "github" && <GitHub />}
+        {page === "releases" && <Releases />}
+        {page === "monitoring" && <Monitoring />}
+        {page === "settings" && <Integrations />}
         {!meta && <Soon title="Introuvable" sprint="" body="Cette page n'existe pas." />}
       </main>
     </div>

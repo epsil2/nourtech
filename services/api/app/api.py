@@ -34,6 +34,11 @@ class AgentIn(BaseModel):
     description: str = Field(default="", max_length=2000)
 
 
+class AgentPatchIn(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120, pattern=r"^[a-zA-Z0-9._-]+$")
+    description: str | None = Field(default=None, max_length=2000)
+
+
 class RunIn(BaseModel):
     objective: str = Field(min_length=3, max_length=4000)
     agent_id: str | None = None
@@ -82,6 +87,34 @@ def get_agent(agent_id: str, request: Request) -> dict[str, Any]:
     row = _store(request).get_agent(agent_id)
     if row is None:
         raise HTTPException(status_code=404, detail="agent not found")
+    return row
+
+
+@router.patch("/agents/{agent_id}")
+def update_agent(
+    agent_id: str,
+    body: AgentPatchIn,
+    request: Request,
+    x_actor: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Rename an agent or rewrite its description. Nothing else is editable here."""
+    store = _store(request)
+    if body.name is None and body.description is None:
+        raise HTTPException(status_code=422, detail="nothing to update")
+    try:
+        row = store.update_agent(agent_id, body.name, body.description)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="agent not found")
+    _audit(
+        store,
+        _actor(x_actor),
+        "agent.updated",
+        "agent",
+        row["id"],
+        {"name": row["name"], "fields": [k for k in ("name", "description") if getattr(body, k) is not None]},
+    )
     return row
 
 

@@ -11,6 +11,9 @@ export function Agents() {
   const [rows, setRows] = useState<SpecRow[] | null>(null);
   const [selected, setSelected] = useState<SpecRow | null>(null);
   const [wizard, setWizard] = useState(false);
+  const [edit, setEdit] = useState<Agent | null>(null);
+  const [form, setForm] = useState({ name: "", description: "" });
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   const load = () => {
@@ -23,6 +26,34 @@ export function Agents() {
   };
 
   useEffect(load, []);
+
+  const startEdit = (agent: Agent) => {
+    setEdit(agent);
+    setForm({ name: agent.name, description: agent.description ?? "" });
+    setError("");
+  };
+
+  const save = async () => {
+    if (!edit) return;
+    setSaving(true);
+    setError("");
+    try {
+      const body: { name?: string; description?: string } = {};
+      if (form.name.trim() && form.name.trim() !== edit.name) body.name = form.name.trim();
+      if (form.description !== (edit.description ?? "")) body.description = form.description;
+      if (Object.keys(body).length === 0) {
+        setEdit(null);
+        return;
+      }
+      await api.patch(`/api/v1/agents/${edit.id}`, body);
+      setEdit(null);
+      load();
+    } catch (e) {
+      setError(String((e as Error).message ?? e));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   if (wizard) {
     return (
@@ -72,6 +103,42 @@ export function Agents() {
 
       {error && <ErrorLine>{error}</ErrorLine>}
 
+      {edit && (
+        <Panel title={`Modifier ${edit.name}`}>
+          <div className="field">
+            <label htmlFor="agent-name">Nom</label>
+            <input
+              id="agent-name"
+              className="inp"
+              value={form.name}
+              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="agent-desc">Description</label>
+            <textarea
+              id="agent-desc"
+              className="inp"
+              rows={3}
+              value={form.description}
+              onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+            />
+          </div>
+          <div className="row-actions">
+            <button className="btn" onClick={save} disabled={saving} type="button">
+              {saving ? "Enregistrement…" : "Enregistrer"}
+            </button>
+            <button className="btn ghost" onClick={() => setEdit(null)} disabled={saving} type="button">
+              Annuler
+            </button>
+          </div>
+          <p className="sub" style={{ marginTop: 6 }}>
+            Le renommage est refusé si le nom existe déjà. Chaque modification est auditée avec votre nom
+            d'acteur.
+          </p>
+        </Panel>
+      )}
+
       <Panel title="Registre" action={<Tag tone="mut">{agents?.length ?? 0} agents</Tag>}>
         {agents === null ? (
           <Loading rows={2} />
@@ -85,6 +152,11 @@ export function Agents() {
               <b>{a.name}</b>
               <span>{a.description || "sans description"}</span>
               <Tag tone="ok">enregistré</Tag>
+              <span className="row-actions">
+                <button className="btn ghost sm" onClick={() => startEdit(a)} type="button">
+                  Modifier
+                </button>
+              </span>
             </div>
           ))
         )}

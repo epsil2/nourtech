@@ -92,7 +92,7 @@ nav { display: flex; flex-direction: column; gap: 2px; }
 .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-right: 6px; }
 
 /* ---------- main ---------- */
-main { padding: 22px 24px 28px; overflow-y: auto; max-height: 100%; }
+main { padding: 22px 24px 28px; overflow-y: auto; overflow-x: hidden; max-height: 100%; min-width: 0; }
 .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 h1 { font-size: 25px; letter-spacing: -0.4px; font-weight: 650; }
 .sub { color: var(--mut); font-size: 12.5px; margin-top: 5px; max-width: 720px; }
@@ -140,6 +140,7 @@ h1 { font-size: 25px; letter-spacing: -0.4px; font-weight: 650; }
 .panel {
   background: linear-gradient(180deg, rgba(18, 18, 28, 0.92), rgba(11, 11, 18, 0.94));
   border: 1px solid var(--line); border-radius: var(--r); padding: 15px;
+  min-width: 0; overflow-x: auto;
 }
 .panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; gap: 10px; }
 .panel-head h2 { font-size: 13.5px; font-weight: 600; letter-spacing: 0.1px; }
@@ -269,3 +270,29 @@ ul.gwt b { color: var(--vio-2); font-weight: 600; }
 .ok-line { color: var(--ok); font-size: 11.5px; }
 .foot-note { color: var(--mut-2); font-size: 10.5px; }
 .kv b.wrap { text-align: right; max-width: 60%; }
+
+/* --- pages Sprint 3 : backlog, sprints, github, monitoring, intégrations --- */
+.inp {
+  font: inherit; color: var(--fg); background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font-size: 12px;
+}
+.inp:focus { outline: none; border-color: rgba(124, 92, 255, 0.6); }
+textarea.inp { width: 100%; resize: vertical; }
+.head-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.head-right .inp { min-width: 240px; }
+.btn.sm { padding: 4px 9px; font-size: 10.5px; }
+.tbl a { color: var(--fg); text-decoration: none; border-bottom: 1px dotted var(--line); }
+.tbl a:hover { border-bottom-color: #7c5cff; }
+.field > label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--mut-2); font-weight: 600; }
+
+@media (max-width: 1100px) {
+  .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid-2 { grid-template-columns: 1fr; }
+}
+@media (max-width: 720px) {
+  .shell { grid-template-columns: 1fr; }
+  .cards { grid-template-columns: 1fr; }
+}
+table.tbl td { overflow-wrap: anywhere; }
+
+.row-item > b { flex: 0 0 auto; white-space: nowrap; }

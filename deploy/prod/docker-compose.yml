@@ -101,6 +101,10 @@ services:
       JIRA_API_TOKEN: ${JIRA_API_TOKEN:-}
       JIRA_WRITE_ENABLED: ${JIRA_WRITE_ENABLED:-false}
       JIRA_WRITE_PROJECT: ${JIRA_WRITE_PROJECT:-SCRUM}
+      # GitHub: read-only visibility (repository, PRs, workflows, releases).
+      # The token is read by the server process only; the dashboard never sees it.
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_REPO: ${GITHUB_REPO:-}
     depends_on:
       db:
         condition: service_healthy
