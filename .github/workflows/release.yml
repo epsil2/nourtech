@@ -1,0 +1,70 @@
+name: release
+
+# Production half of the release chain (SCRUM-21).
+#
+# The Go/No-Go is the tag itself: publishing `release/<40-hex sha>` on GitHub is a
+# deliberate human act, and nothing else starts this workflow. The deployment is
+# executed on the VPS by factory-release-watcher.timer, which validates that the
+# tagged commit is an ancestor of main, runs scripts/deploy_prod.sh and reports
+# `factory/production` back on that commit. This job only waits for that verified
+# result, so a run can never claim a deployment that did not happen.
+on:
+  push:
+    tags:
+      - "release/*"
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  statuses: read
+
+jobs:
+  production:
+    name: production
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: verifier que le tag pointe sur main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_SHA is not on main: refusing to release a side branch"
+            exit 1
+          fi
+          echo "$GITHUB_SHA is on main"
+      - name: attendre le deploiement verifie
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "waiting for the VPS to report factory/production on $GITHUB_SHA"
+          end=$((SECONDS + 540))
+          while [ "$SECONDS" -lt "$end" ]; do
+            STATE="$(curl -sS --max-time 20 \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/statuses" \
+              | jq -r '[.[] | select(.context == "factory/production")][0].state // "missing"')"
+            echo "status: $STATE"
+            case "$STATE" in
+              success)
+                echo "deployment of $GITHUB_SHA verified by the VPS"
+                exit 0
+                ;;
+              failure|error)
+                echo "::error::deployment of $GITHUB_SHA failed on the VPS ($STATE); the previous release was restored"
+                exit 1
+                ;;
+            esac
+            sleep 20
+          done
+          echo "::error::no deployment status within 9 minutes (VPS: journalctl -u factory-release-watcher)"
+          exit 1
