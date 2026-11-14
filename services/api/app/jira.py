@@ -144,6 +144,52 @@ class JiraClient:
             )
         return out
 
+    def board_issues(self, jql: str, limit: int = 100) -> list[dict[str, Any]]:
+        """Issues with the fields a board shows (assignee, priority, sprint, dates).
+
+        Kept separate from :meth:`issues` so the plain search stays cheap: this one
+        asks for more fields and normalises the sprint custom field, whose id varies
+        between Jira sites.
+        """
+        sprint_field = os.getenv("JIRA_SPRINT_FIELD", "customfield_10020")
+        fields = (
+            "summary,status,issuetype,assignee,priority,labels,parent,created,updated,"
+            f"{sprint_field}"
+        )
+        body = self._get(
+            "/rest/api/3/search/jql",
+            {"jql": jql, "maxResults": min(limit, 100), "fields": fields},
+        )
+        out: list[dict[str, Any]] = []
+        for issue in body.get("issues", []):
+            f = issue.get("fields") or {}
+            raw_sprints = f.get(sprint_field) or []
+            if isinstance(raw_sprints, dict):
+                raw_sprints = [raw_sprints]
+            sprints = [
+                {"id": s.get("id"), "name": s.get("name"), "state": s.get("state")}
+                for s in raw_sprints
+                if isinstance(s, dict)
+            ]
+            parent = f.get("parent") or {}
+            out.append(
+                {
+                    "key": issue.get("key"),
+                    "summary": (f.get("summary") or "")[:200],
+                    "type": (f.get("issuetype") or {}).get("name"),
+                    "status": (f.get("status") or {}).get("name"),
+                    "assignee": (f.get("assignee") or {}).get("displayName"),
+                    "priority": (f.get("priority") or {}).get("name"),
+                    "labels": f.get("labels") or [],
+                    "parent": parent.get("key"),
+                    "sprints": sprints,
+                    "created": (f.get("created") or "")[:10],
+                    "updated": (f.get("updated") or "")[:10],
+                    "url": f"{self.base_url}/browse/{issue.get('key')}" if self.base_url else None,
+                }
+            )
+        return out
+
     def transitions(self, key: str) -> list[dict[str, Any]]:
         """Workflow transitions available on one issue (read-only lookup)."""
         body = self._get(f"/rest/api/3/issue/{urllib.parse.quote(key)}/transitions")

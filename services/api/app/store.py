@@ -249,6 +249,20 @@ class MemoryStore:
         return row
 
     # agent specifications (Sprint 2)
+    def update_agent(
+        self, agent_id: str, name: str | None = None, description: str | None = None
+    ) -> dict[str, Any] | None:
+        row = self.agents.get(agent_id)
+        if row is None:
+            return None
+        if name is not None and name != row["name"]:
+            if any(a["name"] == name for a in self.agents.values()):
+                raise ValueError("agent name already exists")
+            row["name"] = name
+        if description is not None:
+            row["description"] = description
+        return row
+
     def create_agent_spec(self, slug: str, payload: dict[str, Any]) -> dict[str, Any]:
         row = {
             "id": new_id(),
@@ -534,6 +548,30 @@ class PgStore:
 
     def close(self) -> None:
         return None
+
+    def update_agent(
+        self, agent_id: str, name: str | None = None, description: str | None = None
+    ) -> dict[str, Any] | None:
+        sets: list[str] = []
+        params: list[Any] = []
+        if name is not None:
+            sets.append("name = %s")
+            params.append(name)
+        if description is not None:
+            sets.append("description = %s")
+            params.append(description)
+        if not sets:
+            return self.get_agent(agent_id)
+        params.append(agent_id)
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE agents SET {', '.join(sets)} WHERE id = %s "
+                "RETURNING id, name, description, created_at",
+                tuple(params),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return dict(row) if row else None
 
     def create_agent(self, name: str, description: str) -> dict[str, Any]:
         with self._connect() as conn, conn.cursor() as cur:

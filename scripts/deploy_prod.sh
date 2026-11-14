@@ -18,7 +18,8 @@ COMPOSE_FILE="$STACK_DIR/docker-compose.yml"
 ENV_FILE="$STACK_DIR/.env"
 # Optional secrets store kept OUTSIDE the repo: the tree must stay credential-free
 # (tests/test_deploy_pipeline.py scans it), so integration tokens live here.
-SECRETS_FILE="${FACTORY_SECRETS_FILE:-/opt/agent-factory/secrets/jira.env}"
+# Colon-separated list: one file per integration keeps tokens separable.
+SECRETS_FILES="${FACTORY_SECRETS_FILE:-/opt/agent-factory/secrets/jira.env:/opt/agent-factory/secrets/github.env}"
 STATE_DIR="${FACTORY_STATE_DIR:-/opt/agent-factory/state}"
 BACKUP_DIR="${FACTORY_BACKUP_DIR:-/opt/agent-factory/backups}"
 HEALTH_URL="http://127.0.0.1:8081"
@@ -30,11 +31,13 @@ log()  { printf '[deploy] %s\n' "$*"; }
 fail() { printf '[deploy] ERROR: %s\n' "$*" >&2; exit 1; }
 
 compose() {
-  if [ -f "$SECRETS_FILE" ]; then
-    docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" --env-file "$SECRETS_FILE" "$@"
-  else
-    docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
-  fi
+  local args=(-f "$COMPOSE_FILE" --env-file "$ENV_FILE")
+  local file
+  IFS=':' read -r -a files <<< "$SECRETS_FILES"
+  for file in "${files[@]}"; do
+    [ -f "$file" ] && args+=(--env-file "$file")
+  done
+  docker compose "${args[@]}" "$@"
 }
 
 # --- 0. inputs -------------------------------------------------------------

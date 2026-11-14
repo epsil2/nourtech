@@ -68,6 +68,41 @@ Endpoints : `GET /api/v1/specifications/catalog`, `POST /api/v1/specifications/d
 `POST /api/v1/specifications`, `GET /api/v1/specifications`, `GET /api/v1/specifications/{id}`,
 `POST /api/v1/specifications/{id}/approve`.
 
+## Sprint 3 — lecture Jira, GitHub, monitoring, intégrations
+
+Les pages ajoutées lisent l'état réel ; aucune n'écrit dans Jira, GitHub ou le dépôt.
+
+| Page | Endpoint | Ce qu'elle montre |
+|---|---|---|
+| Backlog Jira | `GET /api/v1/integrations/jira/board/backlog?project=SCRUM` | tous les tickets du projet, comptés par statut et par type, filtrés côté navigateur |
+| Sprints | `GET /api/v1/integrations/jira/board/sprints?board=1` | sprints du board avec leur état et le nombre de tickets rattachés ; bouton `↻ Update` qui relit Jira |
+| GitHub | `GET /api/v1/integrations/github/overview` | dépôt, pull requests, commits, workflows Actions, releases |
+| CI/CD & Releases | `GET /api/v1/integrations/github/actions`, `/releases`, `/api/v1/releases`, `/api/v1/evaluations` | runs réels, releases GitHub et internes, évaluations passées |
+| Monitoring & KPI | `GET /api/v1/system`, `/api/v1/system/events` | mémoire, disque, charge, uptime lus dans `/proc` ; compteurs de la base ; portes humaines en vigueur |
+| Intégrations | `GET /api/v1/integrations` | quels fournisseurs ont réellement leurs variables, lesquelles manquent, suggestions |
+| Agents | `PATCH /api/v1/agents/{id}` | renommage et description, audités au nom de l'acteur |
+
+Choix explicites :
+
+- **Backlog en données plutôt qu'un iframe Jira.** Un panneau embarqué dépendrait des en-têtes
+  `X-Frame-Options`/CSP d'Atlassian, de la session Atlassian du visiteur et de l'ouverture de
+  `nourtech.atlassian.net` dans le navigateur — trois points de rupture. La page lit l'API avec le compte
+  de service et n'expose aucun secret ; les clés de ticket renvoient vers Jira.
+- **Sprints en lecture seule.** Démarrer ou clôturer un sprint reste un geste manuel dans Jira : rien ici
+  ne peut modifier un sprint.
+- **Le monitoring n'estime rien.** `/proc` et `statvfs` illisibles ⇒ `null` affiché « n/a ». Les
+  environnements QA/PRE-PROD ne sont pas instrumentés et la page le dit au lieu d'inventer un statut.
+- **Aucune clé ne traverse le navigateur.** La page Intégrations ne reçoit que des booléens et les noms
+  de variables manquantes ; il n'existe volontairement pas de champ de saisie de clé.
+- **Un fournisseur n'est « connecté » que si ses variables existent** dans l'environnement du service ;
+  Claude, OpenAI, Mistral, Ollama, Langfuse, OTLP, Slack et Confluence apparaissent donc en « absent »
+  tant qu'aucune clé n'est fournie — et la page liste ce qui manquerait pour les brancher.
+
+Tests : `tests/test_dashboard_features.py` (12 cas, GitHub et Jira simulés par des stubs, aucun appel
+réseau) — formes de réponse, 503 quand GitHub n'est pas configuré, 422 sur un SHA ou un projet Jira
+invalide, absence de secret dans la réponse, renommage d'agent audité, 409 sur doublon, 404 sur agent
+inconnu.
+
 ## Déploiement (nécessite un accord explicite)
 
 ```bash
@@ -90,7 +125,14 @@ src/lib/api.ts        types et client de l'API réelle
 src/lib/specs.ts      types de la spécification + endpoints
 src/components/Wizard.tsx  wizard 3 étapes + écran de revue
 src/pages/Overview.tsx  vue d'ensemble (données live)
-src/pages/Agents.tsx  registre des agents et des spécifications
+src/pages/Agents.tsx  registre des agents (renommage, description) et des spécifications
+src/pages/Backlog.tsx  tickets Jira du projet SCRUM
+src/pages/Sprints.tsx  sprints du board 1, bouton Update
+src/pages/GitHub.tsx  dépôt, PR, commits, workflows
+src/pages/Releases.tsx  CI/CD, releases GitHub et internes, évaluations
+src/pages/Monitoring.tsx  ressources de l'hôte, compteurs, portes
+src/pages/Integrations.tsx  fournisseurs, variables manquantes, suggestions
+src/lib/integrations.ts  types et appels des pages ci-dessus
 src/components/       shell, KPI, panneaux
 compose.yaml          stack isolée + labels Traefik
 nginx.conf            bundle statique + proxy /api + basic auth
