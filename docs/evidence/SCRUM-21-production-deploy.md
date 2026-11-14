@@ -43,3 +43,26 @@ le PAT GitHub utilisé n'a pas la permission *Secrets* (`GET /repos/.../actions/
 poser les *required reviewers* via l'API. Tant que le secret est absent, le job
 `production` s'arrête avant tout envoi (`::error::DEPLOY_SSH_KEY is not set`) :
 aucun déploiement partiel possible.
+
+## Chaîne exécutée de bout en bout (2026-11-14)
+
+| Maillon | Preuve |
+|---|---|
+| Qualité (PR #5) | run `43613226036` sur `fix/secret-scanner-single-source` : vert |
+| DEV | run `43613242506` job `dev` : image construite, stack DEV (Postgres + Redis + API) démarrée, `/healthz` et `/readyz` verts, stack détruite — **vert** |
+| Qualité (main) | run `43613242506` job `qualite` : 47 tests, compose dev+prod, scan de secrets — **vert** |
+| Go/No-Go | tag `release/3420a3e5df93f45669cc3b2720b6f92b43690b50` publié sur un commit de `main` |
+| Production | run `43613364516` job `production` : statut `factory/production` = `success` → **vert** |
+| Déploiement réel | watcher `16:03:04Z released 3420a3e…`, `last-good` = `3420a3e…`, `/readyz` → `{"status":"ready",…,"ok":true}` ×2, 3 conteneurs `healthy`, `127.0.0.1:8081` seul port publié |
+
+Incidents rencontrés et corrigés dans la même chaîne :
+
+- run `43612908390` (job `dev`) : le smoke test attendait `"ok":true` alors que
+  `/readyz` renvoie `{"status":"ready","dependencies":{…}}` — sonde corrigée
+  (PR #4), rejouée contre le conteneur de production (exit 0).
+- run `43613041109` (job `qualite`) : le scan de secrets matchait le littéral
+  `BEGIN OPENSSH PRIVATE KEY` écrit dans son propre test — un seul scanner
+  `scripts/secret_scan.py`, motifs reconstruits par fragments (PR #5).
+
+Rien de mergé sans CI verte, rien en production sans tag, et le job `production`
+n'est vert que parce que le VPS a répondu `success`.
