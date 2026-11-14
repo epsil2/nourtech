@@ -66,9 +66,4 @@ jobs:
           FACTORY_IMAGE_TAG=ci docker compose config --quiet && echo "prod compose: ok"
       - name: scan de secrets
         run: |
-          if grep -rIn --exclude-dir=.git --exclude-dir=.venv --exclude-dir=__pycache__ --exclude-dir=.pytest_cache \
-               -E 'ATATT[A-Za-z0-9_=-]{10,}|github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{20,}|BEGIN OPENSSH PRIVATE KEY' .; then
-            echo "::error::credential-shaped string committed"
-            exit 1
-          fi
-          echo "secret scan: ok"
+          python scripts/secret_scan.py .
