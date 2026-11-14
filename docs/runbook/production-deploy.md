@@ -9,10 +9,13 @@ pipeline ne fait rien qu'un opérateur ne puisse faire à la main.
 | Étape | Déclencheur | Ce qui doit être vrai |
 |---|---|---|
 | `ci` (`.github/workflows/ci.yml`) | pull request, push sur `main` | tests verts, isolation Compose vérifiée, aucun secret commité |
-| `deploy` job `qualite` | `workflow_dispatch` sur `main` | mêmes tests + `docker compose config` sur dev **et** prod |
+| `deploy` job `dev` | `workflow_dispatch` sur `main` | image construite, stack DEV démarrée pour de vrai (Postgres + Redis + API), `/healthz` et `/readyz` répondent, stack détruite ensuite |
+| `deploy` job `qualite` | après `dev` | tests, `docker compose config` sur dev **et** prod, scan de secrets |
 | `deploy` job `production` | même run, après `qualite` | saisie manuelle `confirm=deploy`, environnement `production`, branche `main`, un seul déploiement à la fois (`concurrency`) |
 
-Rien ne part en production sur un simple merge : il faut lancer le workflow à la main.
+Chaîne complète : **DEV → Qualité → Production**. Rien ne part en production sur un
+simple merge : il faut lancer le workflow à la main, et le job `production` ne
+démarre que si `dev` puis `qualite` sont verts.
 
 ## 2. Déployer
 

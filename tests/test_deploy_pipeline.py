@@ -35,6 +35,21 @@ def test_production_is_manual_and_main_only():
     assert not re.search(r"^  push:", text, re.MULTILINE)
 
 
+def test_chain_is_dev_then_quality_then_production():
+    text = deploy_text()
+    jobs = {}
+    for name in ("dev", "qualite", "production"):
+        assert re.search(rf"^  {name}:", text, re.MULTILINE), name
+        jobs[name] = text.split(f"  {name}:", 1)[1]
+    assert "needs: dev" in jobs["qualite"]
+    assert "needs: qualite" in jobs["production"]
+    # the DEV stage really boots the stack and calls both probes
+    dev = jobs["qualite"].split("  qualite:", 1)[0] if False else jobs["dev"].split("  qualite:", 1)[0]
+    assert "docker compose up -d --wait" in dev
+    assert "/healthz" in dev and "/readyz" in dev
+    assert "docker compose down -v" in dev
+
+
 def test_production_requires_quality_gate_and_environment():
     text = deploy_text()
     assert re.search(r"^  qualite:", text, re.MULTILINE)
@@ -61,12 +76,15 @@ def test_deploy_uses_archive_and_restricted_ssh_command():
     assert "IdentitiesOnly=yes" in prod
     assert "BatchMode=yes" in prod
     assert "DEPLOY_SSH_KEY" in prod
-    # the key is only accepted through a restricted forced command
-    assert RECEIVER.is_file()
-    recv = RECEIVER.read_text(encoding="utf-8")
-    assert "SSH_ORIGINAL_COMMAND" in recv
-    assert "^[0-9a-f]{40}$" in recv
-    assert "rsync -a --delete" in recv
+    # the key is only accepted through a restricted forced command.
+    # The receiver lives on the VPS, so its content is only checked there (CI
+    # runners have no /opt/agent-factory) but the contract is checked everywhere.
+    if RECEIVER.is_file():
+        recv = RECEIVER.read_text(encoding="utf-8")
+        assert "SSH_ORIGINAL_COMMAND" in recv
+        assert "^[0-9a-f]{40}$" in recv
+        assert "rsync -a --delete" in recv
+        assert "deploy_prod.sh" in recv
 
 
 def test_host_key_is_pinned_in_the_repository():

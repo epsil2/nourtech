@@ -4,8 +4,10 @@ Date : 2026-11-14 · Branche : `feature/scrum-21-gitlab-production-pipeline` · 
 
 ## Livré
 
-- `.github/workflows/deploy.yml` — job `qualite` (tests, `docker compose config`
-  dev + prod, scan de secrets) puis job `production` :
+- `.github/workflows/deploy.yml` — chaîne `dev` → `qualite` → `production` :
+  `dev` construit l'image et démarre la stack DEV réelle sur le runner avec smoke
+  `/healthz` + `/readyz` (teardown systématique), `qualite` rejoue tests,
+  `docker compose config` dev + prod et le scan de secrets, puis `production` :
   `workflow_dispatch` avec `confirm=deploy`, `needs: qualite`, environnement
   `production`, `main` uniquement, `concurrency: production-deploy`.
 - `.github/workflows/ci.yml` — gates sur PR et sur `main`.
@@ -24,7 +26,7 @@ Date : 2026-11-14 · Branche : `feature/scrum-21-gitlab-production-pipeline` · 
 
 | Contrôle | Résultat |
 |---|---|
-| `pytest -q` | **46 passed** (dont 8 sur le pipeline) |
+| `pytest -q` | **47 passed** (dont 9 sur le pipeline) |
 | `bash -n receive.sh` | OK |
 | Commande arbitraire via la clé (`id`, `rm -rf`) | **refusée**, code 2, message `expected 'deploy <40-hex sha>'` |
 | Déploiement réel par le chemin du pipeline (`git archive HEAD \| ssh "deploy <sha>"`) | **OK** — `8795baad9e76951ebf377cd70e9225c3f9e049bf` |

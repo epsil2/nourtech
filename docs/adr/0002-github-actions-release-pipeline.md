@@ -13,10 +13,14 @@ n'existe sur la machine ; le propriétaire a tranché pour GitHub.
 
 ## Décision
 
-Un seul pipeline, `.github/workflows/deploy.yml`, en trois garanties :
+Un seul pipeline, `.github/workflows/deploy.yml`, enchaîné `dev` → `qualite` →
+`production`, avec trois garanties :
 
-1. **Qualité obligatoire** : le job `production` déclare `needs: qualite`, qui
-   rejoue tests, `docker compose config` sur les deux stacks et le scan de secrets.
+1. **DEV et qualité obligatoires** : le job `dev` construit l'image et démarre la
+   vraie stack DEV sur le runner (Postgres, Redis, API) puis interroge `/healthz`
+   et `/readyz` — une image qui ne sert pas ne franchit jamais les gates. Le job
+   `qualite` rejoue tests, `docker compose config` sur les deux stacks et le scan
+   de secrets. `production` déclare `needs: qualite`, `qualite` déclare `needs: dev`.
 2. **Porte humaine** : `workflow_dispatch` avec `confirm=deploy`, plus
    l'environnement GitHub `production` (required reviewers), branche `main`
    seulement, `concurrency` pour interdire deux déploiements simultanés.
