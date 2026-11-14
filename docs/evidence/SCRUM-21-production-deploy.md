@@ -1,67 +1,44 @@
-# SCRUM-21 — delivery pipeline and production deployment evidence
+# SCRUM-21 — CI/CD de release vers la production (GitHub Actions)
 
-Date: 2026-11-14 (UTC) · Commit deployed: `eab8f48f51e83470438718f1f7dc75d797afab70`
-Branch: `feature/scrum-21-gitlab-production-pipeline` · PR #2
+Date : 2026-11-14 · Branche : `feature/scrum-21-gitlab-production-pipeline` · VPS : `srv2115787`
 
-## What was built
+## Livré
 
-| piece | file | state |
-|---|---|---|
-| GitLab pipeline (qualite -> production) | `.gitlab-ci.yml` | written, validated |
-| One-way GitHub -> GitLab mirror | `.github/workflows/mirror-to-gitlab.yml` | written, needs `GITLAB_TOKEN` + `GITLAB_PATH` |
-| Production stack | `deploy/prod/docker-compose.yml` | deployed and healthy |
-| Deploy / rollback script | `scripts/deploy_prod.sh` | executed twice on production |
-| Runbook | `docs/runbook/production-deploy.md` | — |
-| Decision record | `docs/adr/0002-gitlab-delivery-pipeline.md` | — |
+- `.github/workflows/deploy.yml` — job `qualite` (tests, `docker compose config`
+  dev + prod, scan de secrets) puis job `production` :
+  `workflow_dispatch` avec `confirm=deploy`, `needs: qualite`, environnement
+  `production`, `main` uniquement, `concurrency: production-deploy`.
+- `.github/workflows/ci.yml` — gates sur PR et sur `main`.
+- `/opt/agent-factory/bin/receive.sh` — commande forcée de la clé de déploiement :
+  n'accepte que `deploy <sha 40 hex>`, extrait l'archive, `rsync --delete`
+  (en préservant `deploy/prod/.env`), lance `scripts/deploy_prod.sh`.
+- `/root/.ssh/authorized_keys` — clé `github-actions-deploy@nourtech` avec
+  `restrict,command="/opt/agent-factory/bin/receive.sh"`.
+- `deploy/prod/known_hosts` — clé d'hôte du VPS épinglée (publique).
+- `tests/test_deploy_pipeline.py` — 8 tests de politique.
+- `.gitlab-ci.yml`, `.github/workflows/mirror-to-gitlab.yml` et
+  `tests/test_gitlab_pipeline.py` supprimés : pas d'accès GitLab, chemin abandonné
+  par décision du propriétaire.
 
-## Quality gates
+## Preuves exécutées
 
-- `pytest`: **44 passed** (25 before this change). New suites: `tests/test_prod_policy.py`
-  (13 assertions) and `tests/test_gitlab_pipeline.py` (7 assertions).
-- GitHub Actions: run **43611324742** on `eab8f48` — green (pytest, compose isolation,
-  secret scan).
-- Compose: `deploy/prod` resolves with project `agent-factory-prod`, api published on
-  `127.0.0.1:8081` only, db/cache on an internal network.
-- Secret scan: no credential shape in the tree; the pipeline file only carries the
-  patterns used by the scan.
-
-## Production deployment (executed)
-
-```
-[deploy] preflight: 1500 MiB RAM available, 17 GiB free on /
-[deploy] previous known-good tag: 532cd72d9131bfd580c53778f6e668f80c5f7220
-[deploy] database backup: /opt/agent-factory/backups/prod-20261114T154054Z.sql.gz
-[deploy] deployed eab8f48f51e83470438718f1f7dc75d797afab70: /healthz and /readyz are green
-```
-
-| check | result |
+| Contrôle | Résultat |
 |---|---|
-| `GET /healthz` | `{"status":"ok","env":"prod"}` |
-| `GET /readyz` | `database ok, cache ok` |
-| `ss -ltn` | `127.0.0.1:8081` only — no `5432`/`6379` on the host |
-| containers | 3 healthy |
-| memory used | api 33.8 / db 47.8 / cache 7.6 MiB against 608 MiB of ceilings |
-| `MemAvailable` after | 1500 MiB |
-| pre-existing production containers | 10 untouched (uptimes 11–12 days, same 5 Compose projects) |
-| `state/last-good` | `eab8f48…` |
-| backups | `/opt/agent-factory/backups/prod-*.sql.gz` (5 kept) |
+| `pytest -q` | **46 passed** (dont 8 sur le pipeline) |
+| `bash -n receive.sh` | OK |
+| Commande arbitraire via la clé (`id`, `rm -rf`) | **refusée**, code 2, message `expected 'deploy <40-hex sha>'` |
+| Déploiement réel par le chemin du pipeline (`git archive HEAD \| ssh "deploy <sha>"`) | **OK** — `8795baad9e76951ebf377cd70e9225c3f9e049bf` |
+| `/healthz` après ce déploiement | `{"status":"ok","env":"prod"}` |
+| `/readyz` après ce déploiement | `database ok, cache ok` (JSON `ready`) |
+| `state/last-good` | `8795baad9e76951ebf377cd70e9225c3f9e049bf` |
+| Conteneurs | 3/3 `healthy` (`api` sur `127.0.0.1:8081` uniquement) |
+| Conteneurs de production existants | 10, inchangés |
 
-## Defects found by deploying for real
+## Limite connue
 
-1. **Unreachable endpoint** — Docker creates no loopback DNAT for a port published on
-   an `internal: true` network: `127.0.0.1:8081` answered nothing even though the
-   container was healthy. Fix: db and cache stay on the internal network, the api also
-   joins a routable edge network; a test pins that the api is its only member.
-2. **Rollback that never ran** — the cleanup hung off `trap ... ERR`, and an explicit
-   `exit` in `fail()` does not fire it, so a failed smoke test left the broken stack
-   running. Fix: `trap ... EXIT` plus a `STACK_TOUCHED` flag so a preflight failure
-   cannot stop a healthy stack. Verified: a placeholder password exits 1 and leaves the
-   three containers up.
-
-## Not done
-
-- No GitLab project or credential exists: the GitLab pipeline has never run, and the
-  mirror workflow has never executed. This is the remaining gap for SCRUM-21.
-- Rollback to a previous tag has a usable tag available but has not been rehearsed on
-  production (it would interrupt a healthy service).
-- No image CVE scan, no load test (1 vCPU, no paid service approved).
+Le secret d'environnement `DEPLOY_SSH_KEY` doit être créé par le propriétaire :
+le PAT GitHub utilisé n'a pas la permission *Secrets* (`GET /repos/.../actions/secrets`
+→ 403), ni *Administration* pour enregistrer un runner, ni *Environments* pour
+poser les *required reviewers* via l'API. Tant que le secret est absent, le job
+`production` s'arrête avant tout envoi (`::error::DEPLOY_SSH_KEY is not set`) :
+aucun déploiement partiel possible.

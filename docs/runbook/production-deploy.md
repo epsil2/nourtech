@@ -1,103 +1,81 @@
-# Production deployment runbook — AI Agent Factory
+# Runbook — mise en production de la factory
 
-Scope: the `agent-factory-prod` Compose stack (API + PostgreSQL + Redis) on the
-VPS `srv2115787`. Nothing here touches Traefik, Hermes, the site, or the trading
-stacks: every command is scoped with `-f deploy/prod/docker-compose.yml`.
+Chemin nominal : **GitHub Actions**, workflow `deploy` (`.github/workflows/deploy.yml`).
+Un seul chemin, celui-là. Le script `scripts/deploy_prod.sh` reste l'exécutant : le
+pipeline ne fait rien qu'un opérateur ne puisse faire à la main.
 
-## Mental model
+## 1. Gates
 
-```
-GitHub (review, CI)  --one-way mirror-->  GitLab (pipeline)  --ssh-->  VPS
-                                          qualite -> production
-                                          (manual gate)      /opt/agent-factory/app
-```
-
-- **GitHub** stays the source of truth: review, pull request, `ci.yml`.
-- **GitLab** runs the delivery pipeline: stage `qualite` (tests, compose, secrets)
-  then stage `production`, which is **manual** and **default branch only**.
-- The VPS holds a working copy at `/opt/agent-factory/app`. The production job
-  rsyncs the commit there and runs `scripts/deploy_prod.sh` with
-  `FACTORY_IMAGE_TAG=$CI_COMMIT_SHA`.
-
-## Exposure
-
-The API listens on `127.0.0.1:8081` only. Nothing is published to the internet.
-Fronting it with Traefik later is a separate decision (needs a DNS record and a
-router label); the API currently exposes only `/healthz` and `/readyz`.
-
-## Resource budget
-
-| service | memory | cpu |
+| Étape | Déclencheur | Ce qui doit être vrai |
 |---|---|---|
-| db | 320 MiB | 0.50 |
-| cache | 96 MiB | 0.25 |
-| api | 192 MiB | 0.50 |
-| **total** | **608 MiB** | — |
+| `ci` (`.github/workflows/ci.yml`) | pull request, push sur `main` | tests verts, isolation Compose vérifiée, aucun secret commité |
+| `deploy` job `qualite` | `workflow_dispatch` sur `main` | mêmes tests + `docker compose config` sur dev **et** prod |
+| `deploy` job `production` | même run, après `qualite` | saisie manuelle `confirm=deploy`, environnement `production`, branche `main`, un seul déploiement à la fois (`concurrency`) |
 
-The deploy aborts if `MemAvailable` < 700 MiB or free disk < 3 GiB, so it cannot
-squeeze the services already running on the host.
+Rien ne part en production sur un simple merge : il faut lancer le workflow à la main.
 
-## First-time setup (once, on the VPS)
+## 2. Déployer
+
+1. Onglet **Actions** → workflow **deploy** → **Run workflow**, branche `main`.
+2. Champ `confirm` : taper exactement `deploy`.
+3. Le job `production` exige l'approbation de l'environnement `production`
+   (réglage GitHub : *Required reviewers* = le propriétaire du dépôt).
+4. La fin du job affiche `commit <sha> / run <id> / statut success`.
+
+## 3. Ce que fait le job `production`
+
+1. `git archive HEAD` du commit approuvé.
+2. Envoi par SSH au VPS avec la clé `DEPLOY_SSH_KEY` (secret d'environnement).
+   La clé est enregistrée côté serveur avec `restrict,command="/opt/agent-factory/bin/receive.sh"` :
+   elle n'exécute que `deploy <sha 40 hexadécimaux>`, tout le reste est refusé (code 2).
+3. `receive.sh` extrait l'archive dans un répertoire temporaire, `rsync --delete`
+   vers `/opt/agent-factory/app` en préservant `deploy/prod/.env`, puis lance
+   `scripts/deploy_prod.sh` avec `FACTORY_IMAGE_TAG=<sha>`.
+4. `deploy_prod.sh` : préflight RAM/disque → `pg_dumpall` dans
+   `/opt/agent-factory/backups/` → build de l'image → `up -d --wait` → smoke
+   `/healthz` + `/readyz` → écriture de `/opt/agent-factory/state/last-good` →
+   rollback automatique sur le tag précédent si une étape échoue.
+5. L'API reste sur `127.0.0.1:8081` : elle n'est joignable que depuis le VPS.
+
+## 4. Vérifier après coup
 
 ```bash
-install -d -m 750 /opt/agent-factory/app /opt/agent-factory/state /opt/agent-factory/backups
-cp /opt/agent-factory/app/deploy/prod/.env.example /opt/agent-factory/app/deploy/prod/.env
-sed -i "s/^FACTORY_DB_PASSWORD=.*/FACTORY_DB_PASSWORD=$(openssl rand -hex 24)/" /opt/agent-factory/app/deploy/prod/.env
-chmod 600 /opt/agent-factory/app/deploy/prod/.env
+ssh root@2.24.51.199 'cat /opt/agent-factory/state/last-good'
+ssh root@2.24.51.199 'curl -s http://127.0.0.1:8081/readyz'
+ssh root@2.24.51.199 'cd /opt/agent-factory/app && docker compose -p agent-factory-prod ps'
+ssh root@2.24.51.199 'tail -40 /opt/agent-factory/state/receive.log'
 ```
 
-## Deploy
+Attendu : le sha du run, `database ok, cache ok`, 3 conteneurs `healthy`.
 
-Local (operator):
-
-```bash
-cd /path/to/repo
-FACTORY_IMAGE_TAG="$(git rev-parse HEAD)" ./scripts/deploy_prod.sh
-```
-
-Through GitLab: **CI/CD > Pipelines > Run pipeline** on the default branch, wait
-for `qualite` to pass, then press ▶ on `production:deploy`.
-
-What the script does, in order: input checks → capacity preflight → compose
-validation → `pg_dumpall` backup (last 5 kept in `/opt/agent-factory/backups`) →
-`docker build -t agent-factory-api:<sha>` → `compose up -d --wait` → smoke test
-`/readyz` then `/healthz` → records `<sha>` in `/opt/agent-factory/state/last-good`.
-`FACTORY_DEPLOY_DRY_RUN=1` stops after the preflight.
-
-## Rollback
-
-Automatic: if the build, start or smoke test fails, the script redeploys the tag
-in `state/last-good`; with no usable previous tag it stops the stack. The job
-exits non-zero either way, so the pipeline stays red.
-
-Manual:
+## 5. Rollback
 
 ```bash
+ssh root@2.24.51.199
 cd /opt/agent-factory/app
-FACTORY_IMAGE_TAG="$(cat /opt/agent-factory/state/last-good)" \
-  docker compose -f deploy/prod/docker-compose.yml --env-file deploy/prod/.env up -d --wait
+FACTORY_IMAGE_TAG=$(cat /opt/agent-factory/state/previous-good) ./scripts/deploy_prod.sh
 ```
 
-Stop without touching data: `docker compose -f deploy/prod/docker-compose.yml down`.
-Delete data (irreversible): add `-v`.
+`deploy_prod.sh` écrit `state/previous-good` avant chaque déploiement. Si la stack
+ne répond pas au smoke test, le script fait ce rollback tout seul et sort en erreur,
+ce qui fait échouer le job GitHub — le run rouge est donc la trace du rollback.
 
-## GitLab CI/CD variables to create
+Restauration de la base si nécessaire : `psql -f /opt/agent-factory/backups/<dump>.sql`.
 
-| variable | type | notes |
-|---|---|---|
-| `DEPLOY_HOST` | variable | VPS address; protected |
-| `DEPLOY_USER` | variable | account allowed to run docker compose; protected |
-| `DEPLOY_SSH_KEY` | **File** | private key of that account; protected, masked |
+## 6. Panne de la clé de déploiement
 
-On the GitHub side (for the one-way mirror): secret `GITLAB_TOKEN`
-(project access token, `write_repository`) and variable `GITLAB_PATH`
-(e.g. `epsil2/nourtech`).
-
-## Verification after a deploy
+Si le secret `DEPLOY_SSH_KEY` est absent ou refusé, le job échoue avant tout envoi
+avec `::error::DEPLOY_SSH_KEY is not set` ou `Permission denied (publickey)` :
+rien n'a été déployé. Régénérer alors la paire côté VPS :
 
 ```bash
-curl -fsS http://127.0.0.1:8081/healthz
-curl -fsS http://127.0.0.1:8081/readyz
-ss -ltnH | grep 8081          # 127.0.0.1:8081 only, never 0.0.0.0
-cd /opt/agent-factory/app && docker compose -f deploy/prod/docker-compose.yml ps
+ssh-keygen -t ed25519 -N '' -C 'github-actions-deploy@nourtech' -f /opt/agent-factory/keys/deploy_ed25519
+# remplacer la ligne correspondante dans /root/.ssh/authorized_keys
+# puis coller la clé privée dans Settings > Secrets > production > DEPLOY_SSH_KEY
 ```
+
+## 7. Ce que le pipeline ne fait pas
+
+- Pas de scan CVE des images ni de test de charge (1 vCPU, pas de service payant).
+- Pas d'exposition publique : aucun DNS, aucun vhost Traefik pour la factory.
+- Ne touche à aucun autre projet Compose du VPS (Traefik, Hermes, site, trading).

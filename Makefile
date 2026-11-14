@@ -1,7 +1,7 @@
 PY ?= python3
 VENV ?= .venv
 
-.PHONY: venv test compose-check audit dev-up dev-down dev-ps prod-check prod-dry prod-deploy prod-ps prod-logs prod-down prod-smoke
+.PHONY: venv test compose-check audit dev-up dev-down dev-ps prod-check prod-dry prod-deploy prod-ps prod-logs prod-down prod-smoke pipeline-check
 
 venv:
 	$(PY) -m venv $(VENV)
@@ -25,7 +25,7 @@ dev-ps:
 dev-down:
 	cd deploy/dev && docker compose down
 
-.PHONY: prod-check prod-dry prod-deploy prod-ps prod-logs prod-down prod-smoke
+.PHONY: prod-check prod-dry prod-deploy prod-ps prod-logs prod-down prod-smoke pipeline-check
 
 prod-check:
 	cd deploy/prod && FACTORY_IMAGE_TAG=check docker compose config --quiet && echo "prod compose valid"
@@ -47,3 +47,9 @@ prod-down:
 
 prod-smoke:
 	curl -fsS http://127.0.0.1:8081/healthz && echo && curl -fsS http://127.0.0.1:8081/readyz && echo
+
+# Validation locale du pipeline de release (mêmes gates que le job qualite)
+pipeline-check:
+	$(VENV)/bin/python -m pytest -q tests/test_deploy_pipeline.py tests/test_prod_policy.py
+	cd deploy/dev && cp -n .env.example .env 2>/dev/null || true; docker compose config --quiet && echo "dev compose valid"
+	cd deploy/prod && cp -n .env.example .env 2>/dev/null || true; FACTORY_IMAGE_TAG=check docker compose config --quiet && echo "prod compose valid"

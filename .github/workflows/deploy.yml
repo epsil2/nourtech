@@ -1,0 +1,93 @@
+name: deploy
+
+# Release path: qualite -> production, entirely on GitHub Actions (SCRUM-21).
+#   1. qualite     : tests, Compose validation of both stacks, secret scan.
+#   2. production  : MANUAL (workflow_dispatch with confirm=deploy), main only,
+#                    serialised, needs qualite, runs in the `production`
+#                    environment. It streams `git archive` to the VPS over a
+#                    restricted SSH key whose forced command only accepts
+#                    "deploy <40-hex sha>".
+# The VPS runs the same scripts/deploy_prod.sh an operator would run, so the
+# pipeline cannot do anything a human could not do by hand.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "deploy" to release the current main to production'
+        required: true
+        type: string
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  DEPLOY_HOST: 2.24.51.199
+  DEPLOY_USER: root
+
+jobs:
+  qualite:
+    name: qualite
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: tests
+        run: |
+          pip install -r services/api/requirements-dev.txt
+          python -m pytest -q
+      - name: compose (dev et prod)
+        run: |
+          cd deploy/dev && cp .env.example .env && docker compose config --quiet && echo "dev compose: ok"
+          cd ../prod && cp .env.example .env
+          sed -i 's/^FACTORY_DB_PASSWORD=.*/FACTORY_DB_PASSWORD=ci-only-placeholder/' .env
+          FACTORY_IMAGE_TAG=ci docker compose config --quiet && echo "prod compose: ok"
+      - name: scan de secrets
+        run: |
+          if grep -rIn --exclude-dir=.git --exclude-dir=.venv --exclude-dir=__pycache__ --exclude-dir=.pytest_cache \
+               -E 'ATATT[A-Za-z0-9_=-]{10,}|github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{20,}|BEGIN OPENSSH PRIVATE KEY' .; then
+            echo "::error::credential-shaped string committed"
+            exit 1
+          fi
+          echo "secret scan: ok"
+
+  production:
+    name: production
+    needs: qualite
+    if: github.ref == 'refs/heads/main' && inputs.confirm == 'deploy'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: verifier le secret de deploiement
+        env:
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::DEPLOY_SSH_KEY is not set on the production environment: nothing was deployed"
+            exit 1
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          cp deploy/prod/known_hosts ~/.ssh/known_hosts
+      - name: deployer
+        run: |
+          set -euo pipefail
+          SHA="$(git rev-parse HEAD)"
+          echo "deploying $SHA to $DEPLOY_HOST"
+          git archive --format=tar HEAD \
+            | ssh -i ~/.ssh/deploy -o IdentitiesOnly=yes -o BatchMode=yes \
+                "$DEPLOY_USER@$DEPLOY_HOST" "deploy $SHA"
+      - name: resume
+        if: always()
+        run: |
+          echo "commit ${{ github.sha }} / run ${{ github.run_id }} / statut ${{ job.status }}"
+          echo "verification: ssh $DEPLOY_USER@$DEPLOY_HOST 'cat /opt/agent-factory/state/last-good'"
