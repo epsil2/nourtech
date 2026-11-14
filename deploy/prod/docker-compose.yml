@@ -1,0 +1,145 @@
+# AI Agent Factory - PRODUCTION stack (SCRUM-21)
+# Same isolation model as DEV, with production-only differences:
+#   * restart: always
+#   * the API is reachable ONLY on the loopback interface (127.0.0.1:8081):
+#     nothing is exposed to the internet, Traefik/Nginx can front it later
+#   * the API image is addressed by an explicit immutable tag (FACTORY_IMAGE_TAG),
+#     never by "latest", so a deployment is reproducible and rollback is possible
+# Rules enforced by tests/test_prod_policy.py.
+name: agent-factory-prod
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: ${FACTORY_DB_NAME:-factory}
+      POSTGRES_USER: ${FACTORY_DB_USER:-factory}
+      POSTGRES_PASSWORD: ${FACTORY_DB_PASSWORD:?FACTORY_DB_PASSWORD must be set in deploy/prod/.env}
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    command:
+      - postgres
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - max_connections=25
+      - -c
+      - effective_cache_size=128MB
+    volumes:
+      - factory-db-data:/var/lib/postgresql/data
+    networks:
+      - factory-internal
+    <<: *hardening
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 320M
+    logging: *default-logging
+
+  cache:
+    image: redis:7-alpine
+    restart: always
+    command:
+      - redis-server
+      - --maxmemory
+      - 80mb
+      - --maxmemory-policy
+      - allkeys-lru
+      - --save
+      - ""
+    networks:
+      - factory-internal
+    <<: *hardening
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 96M
+    logging: *default-logging
+
+  api:
+    image: agent-factory-api:${FACTORY_IMAGE_TAG:?FACTORY_IMAGE_TAG must be set (git commit sha)}
+    build:
+      context: ../../services/api
+    restart: always
+    environment:
+      FACTORY_ENV: prod
+      FACTORY_DB_HOST: db
+      FACTORY_DB_PORT: "5432"
+      FACTORY_DB_NAME: ${FACTORY_DB_NAME:-factory}
+      FACTORY_DB_USER: ${FACTORY_DB_USER:-factory}
+      FACTORY_DB_PASSWORD: ${FACTORY_DB_PASSWORD:?FACTORY_DB_PASSWORD must be set in deploy/prod/.env}
+      FACTORY_CACHE_HOST: cache
+      FACTORY_CACHE_PORT: "6379"
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8081:8080"
+    networks:
+      - factory-internal
+      - factory-edge
+    <<: *hardening
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 192M
+    logging: *default-logging
+
+networks:
+  # db and cache live here and nowhere else: no route off the host.
+  factory-internal:
+    name: agent-factory-prod-internal
+    driver: bridge
+    internal: true
+    labels:
+      com.nourtech.owner: ai-agent-factory
+      com.nourtech.env: prod
+  # Docker does not create the loopback DNAT for a port published on an internal
+  # network, so the api needs a second, routable bridge to be reachable from the
+  # host on 127.0.0.1:8081. Only the api is attached to it.
+  factory-edge:
+    name: agent-factory-prod-edge
+    driver: bridge
+    labels:
+      com.nourtech.owner: ai-agent-factory
+      com.nourtech.env: prod
+
+volumes:
+  factory-db-data:
+    name: agent-factory-prod-db-data
+    labels:
+      com.nourtech.owner: ai-agent-factory
+      com.nourtech.env: prod

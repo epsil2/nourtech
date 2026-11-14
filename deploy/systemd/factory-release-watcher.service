@@ -1,0 +1,10 @@
+[Unit]
+Description=AI Agent Factory release watcher (deploys approved release/* tags)
+Documentation=file:/opt/agent-factory/app/docs/runbook/production-deploy.md
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/agent-factory/bin/release_watcher.sh
+Nice=10
