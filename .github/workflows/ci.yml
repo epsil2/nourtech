@@ -34,7 +34,7 @@ jobs:
 
       - name: Fail on committed secrets
         run: |
-          if grep -rIn --exclude-dir=.git -E 'ATATT[A-Za-z0-9_=-]{10,}|github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}' .; then
+          if grep -rIn --exclude-dir=.git --exclude-dir=.venv --exclude-dir=__pycache__ --exclude-dir=.pytest_cache -E 'ATATT[A-Za-z0-9_=-]{10,}|github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}' .; then
             echo "credential-shaped string committed" >&2
             exit 1
           fi

@@ -118,7 +118,11 @@ FAKE_GH_PAT = "github" + "_pat_" + "faketoken" + "0" * 30
 FAKE_GH_CLASSIC = "gh" + "p_" + "faketoken" + "0" * 30
 
 
-@pytest.mark.parametrize("raw", [FAKE_JIRA, FAKE_GH_PAT, FAKE_GH_CLASSIC, "password=hunter2", "API_KEY: sk-live-abcdefghijklmnop"])
+@pytest.mark.parametrize(
+    "raw",
+    [FAKE_JIRA, FAKE_GH_PAT, FAKE_GH_CLASSIC, "password=hunter2", "API_KEY: sk-live-abcdefghijklmnop"],
+    ids=["jira_api_token", "github_pat", "github_classic", "password_assign", "api_key_assign"],
+)
 def test_redact_removes_credentials(raw):
     cleaned = vps_audit.redact(f"leaked value {raw} end")
     body = raw.split("=")[-1].split(":")[-1]
