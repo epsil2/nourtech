@@ -49,6 +49,30 @@ CREATE TABLE IF NOT EXISTS prds (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS workflows (
+    id           uuid PRIMARY KEY,
+    definition   text NOT NULL,
+    status       text NOT NULL,
+    current_step text NULL,
+    state        jsonb NOT NULL DEFAULT '{}'::jsonb,
+    node_count   int NOT NULL DEFAULT 0,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS checkpoints (
+    id          bigserial PRIMARY KEY,
+    workflow_id uuid NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+    seq         int NOT NULL,
+    step        text NOT NULL,
+    kind        text NOT NULL,
+    state       jsonb NOT NULL DEFAULT '{}'::jsonb,
+    decision    text NULL,
+    actor       text NULL,
+    note        text NOT NULL DEFAULT '',
+    at          timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS workflows_status_idx ON workflows (status);
+CREATE INDEX IF NOT EXISTS checkpoints_workflow_idx ON checkpoints (workflow_id, seq);
 CREATE INDEX IF NOT EXISTS runs_status_idx ON runs (status);
 CREATE INDEX IF NOT EXISTS audit_entity_idx ON audit_events (entity_type, entity_id);
 """
@@ -69,6 +93,8 @@ class MemoryStore:
         self.agents: dict[str, dict[str, Any]] = {}
         self.runs: dict[str, dict[str, Any]] = {}
         self.prds: dict[str, dict[str, Any]] = {}
+        self.workflows: dict[str, dict[str, Any]] = {}
+        self.checkpoints: list[dict[str, Any]] = []
         self.audit: list[dict[str, Any]] = []
 
     def init(self) -> None:
@@ -146,6 +172,68 @@ class MemoryStore:
         row["updated_at"] = _now()
         row["payload"] = {**row["payload"], "status": status}
         return row
+
+    # workflows (SCRUM-23, SCRUM-33)
+    def create_workflow(self, definition: str, state: dict[str, Any], nodes: int) -> dict[str, Any]:
+        row = {
+            "id": new_id(),
+            "definition": definition,
+            "status": "running",
+            "current_step": None,
+            "state": state,
+            "node_count": nodes,
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
+        self.workflows[row["id"]] = row
+        return row
+
+    def get_workflow(self, workflow_id: str) -> dict[str, Any] | None:
+        return self.workflows.get(workflow_id)
+
+    def list_workflows(self, status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        rows = [r for r in self.workflows.values() if status is None or r["status"] == status]
+        return sorted(rows, key=lambda r: r["created_at"], reverse=True)[:limit]
+
+    def set_workflow(
+        self, workflow_id: str, *, status: str, current_step: str | None, state: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        row = self.workflows.get(workflow_id)
+        if row is None:
+            return None
+        row.update(status=status, current_step=current_step, state=state, updated_at=_now())
+        return row
+
+    def add_checkpoint(
+        self,
+        workflow_id: str,
+        *,
+        step: str,
+        kind: str,
+        state: dict[str, Any],
+        decision: str | None,
+        actor: str | None,
+        note: str = "",
+    ) -> dict[str, Any]:
+        seq = 1 + max((c["seq"] for c in self.checkpoints if c["workflow_id"] == workflow_id), default=0)
+        row = {
+            "id": len(self.checkpoints) + 1,
+            "workflow_id": workflow_id,
+            "seq": seq,
+            "step": step,
+            "kind": kind,
+            "state": state,
+            "decision": decision,
+            "actor": actor,
+            "note": note,
+            "at": _now(),
+        }
+        self.checkpoints.append(row)
+        return row
+
+    def list_checkpoints(self, workflow_id: str) -> list[dict[str, Any]]:
+        rows = [c for c in self.checkpoints if c["workflow_id"] == workflow_id]
+        return sorted(rows, key=lambda c: c["seq"])
 
     # audit
     def add_audit(self, actor: str, action: str, entity_type: str, entity_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -348,6 +436,97 @@ class PgStore:
             row = cur.fetchone()
             conn.commit()
             return _serialise(row) if row else None
+
+    # workflows (SCRUM-23, SCRUM-33)
+    def create_workflow(self, definition: str, state: dict[str, Any], nodes: int) -> dict[str, Any]:
+        import json as _json
+
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO workflows (id, definition, status, node_count, state) "
+                "VALUES (%s, %s, 'running', %s, %s::jsonb) "
+                "RETURNING id, definition, status, current_step, state, node_count, created_at, updated_at",
+                (new_id(), definition, nodes, _json.dumps(state)),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return _serialise(row)
+
+    def get_workflow(self, workflow_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, definition, status, current_step, state, node_count, created_at, updated_at "
+                "FROM workflows WHERE id = %s",
+                (workflow_id,),
+            )
+            row = cur.fetchone()
+            return _serialise(row) if row else None
+
+    def list_workflows(self, status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as conn, conn.cursor() as cur:
+            if status:
+                cur.execute(
+                    "SELECT id, definition, status, current_step, state, node_count, created_at, updated_at "
+                    "FROM workflows WHERE status = %s ORDER BY created_at DESC LIMIT %s",
+                    (status, limit),
+                )
+            else:
+                cur.execute(
+                    "SELECT id, definition, status, current_step, state, node_count, created_at, updated_at "
+                    "FROM workflows ORDER BY created_at DESC LIMIT %s",
+                    (limit,),
+                )
+            return [_serialise(r) for r in cur.fetchall()]
+
+    def set_workflow(
+        self, workflow_id: str, *, status: str, current_step: str | None, state: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        import json as _json
+
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE workflows SET status = %s, current_step = %s, state = %s::jsonb, updated_at = now() "
+                "WHERE id = %s "
+                "RETURNING id, definition, status, current_step, state, node_count, created_at, updated_at",
+                (status, current_step, _json.dumps(state), workflow_id),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return _serialise(row) if row else None
+
+    def add_checkpoint(
+        self,
+        workflow_id: str,
+        *,
+        step: str,
+        kind: str,
+        state: dict[str, Any],
+        decision: str | None,
+        actor: str | None,
+        note: str = "",
+    ) -> dict[str, Any]:
+        import json as _json
+
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO checkpoints (workflow_id, seq, step, kind, state, decision, actor, note) "
+                "SELECT %s, coalesce(max(seq), 0) + 1, %s, %s, %s::jsonb, %s, %s, %s FROM checkpoints "
+                "WHERE workflow_id = %s "
+                "RETURNING id, workflow_id, seq, step, kind, state, decision, actor, note, at",
+                (workflow_id, step, kind, _json.dumps(state), decision, actor, note, workflow_id),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return _serialise(row)
+
+    def list_checkpoints(self, workflow_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, workflow_id, seq, step, kind, state, decision, actor, note, at "
+                "FROM checkpoints WHERE workflow_id = %s ORDER BY seq",
+                (workflow_id,),
+            )
+            return [_serialise(r) for r in cur.fetchall()]
 
     def audit_count(self) -> int:
         with self._connect() as conn, conn.cursor() as cur:
