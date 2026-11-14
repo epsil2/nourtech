@@ -95,10 +95,11 @@ evidence capture the factory stack was stopped with its own scoped
 
 ## Not run / limitations
 
-- **CI on GitHub Actions**: not executed. The workflow file is added in a
-  follow-up commit once the repository token carries the `workflows` permission;
-  no GitHub runner has run the pipeline yet. Locally the same commands were run
-  manually (pytest, compose config, secret scan).
+- **CI on GitHub Actions**: green on commit `b5c335e` (run 43606029664) — pytest
+  suite, compose isolation check and secret scan. The first run (43605970852, on
+  `944ec4e`) failed on the secret scan because pytest had cached parametrised test
+  ids containing the fake token prefixes; the cases now carry human-readable ids
+  and the scan excludes test caches.
 - **Security scan depth**: grep-based secret detection + compose policy
   assertions; no SAST/DAST tool, no image CVE scanner (no paid service approved).
 - **Load/soak test**: not run — the host has 1 vCPU and 3.9 GiB RAM, and the
