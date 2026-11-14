@@ -99,6 +99,35 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     note        text NOT NULL DEFAULT '',
     at          timestamptz NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS artifacts (
+    commit_sha   text PRIMARY KEY,
+    version      text NOT NULL,
+    workflow     text NOT NULL,
+    source       text NOT NULL DEFAULT 'github',
+    image        text NOT NULL,
+    built_at     text NOT NULL,
+    tests        jsonb NOT NULL DEFAULT '{}'::jsonb,
+    stories      jsonb NOT NULL DEFAULT '[]'::jsonb,
+    signature    text NOT NULL,
+    created_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS releases (
+    id               uuid PRIMARY KEY,
+    version          text NOT NULL,
+    commit_sha       text NOT NULL,
+    target           text NOT NULL,
+    status           text NOT NULL DEFAULT 'draft',
+    report           jsonb NOT NULL DEFAULT '{}'::jsonb,
+    notes            text NOT NULL DEFAULT '',
+    approved_by      text NULL,
+    published_at     timestamptz NULL,
+    rolled_back_to   uuid NULL,
+    rollback_reason  text NULL,
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    updated_at       timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS releases_commit_idx ON releases (commit_sha);
+CREATE INDEX IF NOT EXISTS releases_status_idx ON releases (status);
 CREATE INDEX IF NOT EXISTS workflows_status_idx ON workflows (status);
 CREATE INDEX IF NOT EXISTS checkpoints_workflow_idx ON checkpoints (workflow_id, seq);
 CREATE INDEX IF NOT EXISTS runs_status_idx ON runs (status);
@@ -125,6 +154,8 @@ class MemoryStore:
         self.checkpoints: list[dict[str, Any]] = []
         self.plans: dict[str, dict[str, Any]] = {}
         self.evaluations: list[dict[str, Any]] = []
+        self.artifacts: dict[str, dict[str, Any]] = {}
+        self.releases: dict[str, dict[str, Any]] = {}
         self.audit: list[dict[str, Any]] = []
 
     def init(self) -> None:
@@ -383,6 +414,53 @@ class MemoryStore:
         for row in self.runs.values():
             out[row["status"]] = out.get(row["status"], 0) + 1
         return out
+
+    # artifacts and releases (SCRUM-47, SCRUM-48, SCRUM-49)
+    def create_artifact(self, artifact: dict[str, Any]) -> dict[str, Any]:
+        row = dict(artifact)
+        row["created_at"] = _now()
+        self.artifacts[row["commit_sha"]] = row
+        return row
+
+    def get_artifact(self, commit_sha: str) -> dict[str, Any] | None:
+        return self.artifacts.get((commit_sha or "").lower())
+
+    def list_artifacts(self, limit: int = 50) -> list[dict[str, Any]]:
+        return sorted(self.artifacts.values(), key=lambda r: r["created_at"], reverse=True)[:limit]
+
+    def create_release(self, *, version: str, commit_sha: str, target: str, report: dict[str, Any]) -> dict[str, Any]:
+        row = {
+            "id": new_id(),
+            "version": version,
+            "commit_sha": commit_sha,
+            "target": target,
+            "status": "draft",
+            "report": report,
+            "notes": "",
+            "approved_by": None,
+            "published_at": None,
+            "rolled_back_to": None,
+            "rollback_reason": None,
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
+        self.releases[row["id"]] = row
+        return row
+
+    def get_release(self, release_id: str) -> dict[str, Any] | None:
+        return self.releases.get(release_id)
+
+    def list_releases(self, commit_sha: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        rows = [r for r in self.releases.values() if commit_sha is None or r["commit_sha"] == commit_sha]
+        return sorted(rows, key=lambda r: r["created_at"], reverse=True)[:limit]
+
+    def set_release(self, release_id: str, **fields: Any) -> dict[str, Any] | None:
+        row = self.releases.get(release_id)
+        if row is None:
+            return None
+        row.update({k: v for k, v in fields.items() if v is not None})
+        row["updated_at"] = _now()
+        return row
 
 
 class PgStore:
@@ -782,6 +860,106 @@ class PgStore:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute("SELECT status, count(*) AS n FROM runs GROUP BY status")
             return {r["status"]: int(r["n"]) for r in cur.fetchall()}
+
+
+    # artifacts and releases (SCRUM-47, SCRUM-48, SCRUM-49)
+    def create_artifact(self, artifact: dict[str, Any]) -> dict[str, Any]:
+        import json as _json
+
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO artifacts (commit_sha, version, workflow, source, image, built_at, tests, stories, signature) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s) "
+                "ON CONFLICT (commit_sha) DO NOTHING RETURNING commit_sha, version, workflow, source, image, built_at, "
+                "tests, stories, signature, created_at",
+                (
+                    artifact["commit_sha"],
+                    artifact["version"],
+                    artifact["workflow"],
+                    artifact["source"],
+                    artifact["image"],
+                    artifact["built_at"],
+                    _json.dumps(artifact["tests"]),
+                    _json.dumps(artifact["stories"]),
+                    artifact["signature"],
+                ),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            if row is None:
+                return self.get_artifact(artifact["commit_sha"]) or {}
+            return _serialise(row)
+
+    def get_artifact(self, commit_sha: str) -> dict[str, Any] | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT commit_sha, version, workflow, source, image, built_at, tests, stories, signature, created_at "
+                "FROM artifacts WHERE commit_sha = %s",
+                ((commit_sha or "").lower(),),
+            )
+            row = cur.fetchone()
+            return _serialise(row) if row else None
+
+    def list_artifacts(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT commit_sha, version, workflow, source, image, built_at, tests, stories, signature, created_at "
+                "FROM artifacts ORDER BY created_at DESC LIMIT %s",
+                (limit,),
+            )
+            return [_serialise(r) for r in cur.fetchall()]
+
+    def create_release(self, *, version: str, commit_sha: str, target: str, report: dict[str, Any]) -> dict[str, Any]:
+        import json as _json
+
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO releases (id, version, commit_sha, target, report) VALUES (%s, %s, %s, %s, %s::jsonb) "
+                "RETURNING id, version, commit_sha, target, status, report, notes, approved_by, published_at, "
+                "rolled_back_to, rollback_reason, created_at, updated_at",
+                (new_id(), version, commit_sha, target, _json.dumps(report)),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return _serialise(row)
+
+    def get_release(self, release_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, version, commit_sha, target, status, report, notes, approved_by, published_at, "
+                "rolled_back_to, rollback_reason, created_at, updated_at FROM releases WHERE id = %s::text::uuid",
+                (release_id,),
+            )
+            row = cur.fetchone()
+            return _serialise(row) if row else None
+
+    def list_releases(self, commit_sha: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, version, commit_sha, target, status, report, notes, approved_by, published_at, "
+                "rolled_back_to, rollback_reason, created_at, updated_at FROM releases "
+                "WHERE (%s::text IS NULL OR commit_sha = %s::text) ORDER BY created_at DESC LIMIT %s",
+                (commit_sha, commit_sha, limit),
+            )
+            return [_serialise(r) for r in cur.fetchall()]
+
+    def set_release(self, release_id: str, **fields: Any) -> dict[str, Any] | None:
+        allowed = {"status", "notes", "approved_by", "published_at", "rolled_back_to", "rollback_reason"}
+        updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
+        if not updates:
+            return self.get_release(release_id)
+        assignments = ", ".join(f"{k} = %s" for k in updates)
+        values = list(updates.values())
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE releases SET {assignments}, updated_at = now() WHERE id = %s::text::uuid "
+                "RETURNING id, version, commit_sha, target, status, report, notes, approved_by, published_at, "
+                "rolled_back_to, rollback_reason, created_at, updated_at",
+                (*values, release_id),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return _serialise(row) if row else None
 
 
 def _serialise(row: dict[str, Any]) -> dict[str, Any]:
