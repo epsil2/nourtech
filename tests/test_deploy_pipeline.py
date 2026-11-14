@@ -40,6 +40,10 @@ def test_dev_stage_runs_on_merge_and_boots_the_real_stack():
     # the probe asserts the real contract served by services/api/app/main.py
     assert "d['status']=='ready'" in dev
     assert "docker compose down -v" in dev
+    # SCRUM-22/32: the DEV stage proves real PostgreSQL persistence, not just a
+    # process that answers on a port
+    assert '"/agents"' in dev and '"/runs"' in dev
+    assert "select count(*) from runs" in dev
     assert "if: always()" in dev  # teardown even when the smoke test fails
 
 
@@ -54,10 +58,13 @@ def test_quality_gate_follows_dev():
 
 def test_production_needs_a_human_tag_not_a_merge():
     text = RELEASE.read_text(encoding="utf-8")
-    assert 'push:\n    tags:\n      - "release/*"' in text
+    assert '      - "SP*-Release"' in text
+    assert '      - "release/*"' in text
     # no branch push and no manual dispatch: the tag is the only trigger
     assert "branches:" not in text
     assert "workflow_dispatch" not in text
+    # the tagged commit passes the quality gate before production may wait on it
+    assert "needs: qualite" in job(text, "production")
     prod = job(text, "production")
     assert "merge-base --is-ancestor" in prod
     assert 'select(.context == "factory/production")' in prod
@@ -75,6 +82,7 @@ def test_runner_never_gets_host_access():
 def test_watcher_only_deploys_main_and_reports_status():
     text = WATCHER.read_text(encoding="utf-8")
     assert "release/*" in text
+    assert "SP*-Release" in text  # sprint tags such as SP2-Release are accepted
     assert "compare/main..." in text
     assert "deploy_prod.sh" in text
     assert 'FACTORY_IMAGE_TAG="$ORDERED_SHA"' in text

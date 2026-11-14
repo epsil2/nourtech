@@ -1,20 +1,23 @@
 name: release
 
-# Production half of the release chain (SCRUM-21).
+# Production half of the release chain (SCRUM-21, SCRUM-40, SCRUM-46).
 #
-# The Go/No-Go is the tag itself: publishing `release/<40-hex sha>` on GitHub is a
-# deliberate human act, and nothing else starts this workflow. The deployment is
-# executed on the VPS by factory-release-watcher.timer, which validates that the
-# tagged commit is an ancestor of main, runs scripts/deploy_prod.sh and reports
-# `factory/production` back on that commit. This job only waits for that verified
-# result, so a run can never claim a deployment that did not happen.
+# Nothing in this workflow can deploy by itself: the Go/No-Go is the tag.
+# Two tag shapes are accepted:
+#   SP<n>-Release   sprint release published by a human (SP1-Release, SP2-Release...)
+#   release/<sha>   explicit release of a single commit
+# The quality gate runs on the tagged commit first; only then does `production`
+# wait for `factory/production`, the status the VPS watcher posts after it
+# deployed and health-checked that exact commit. A run can therefore never claim
+# a deployment that did not happen.
 on:
   push:
     tags:
+      - "SP*-Release"
       - "release/*"
 
 concurrency:
-  group: production
+  group: production-release
   cancel-in-progress: false
 
 permissions:
@@ -22,8 +25,30 @@ permissions:
   statuses: read
 
 jobs:
+  qualite:
+    name: qualite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: tests
+        run: |
+          pip install -r services/api/requirements-dev.txt
+          python -m pytest -q
+      - name: compose (dev et prod)
+        run: |
+          cd deploy/dev && cp .env.example .env && docker compose config --quiet && echo "dev compose: ok"
+          cd ../prod && cp .env.example .env
+          sed -i 's/^FACTORY_DB_PASSWORD=.*/FACTORY_DB_PASSWORD=ci-only-placeholder/' .env
+          FACTORY_IMAGE_TAG=ci docker compose config --quiet && echo "prod compose: ok"
+      - name: scan de secrets
+        run: python scripts/secret_scan.py .
+
   production:
     name: production
+    needs: qualite
     runs-on: ubuntu-latest
     environment:
       name: production
@@ -31,36 +56,42 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: resoudre le commit du tag
+        run: |
+          set -euo pipefail
+          SHA="$(git rev-list -n1 "$GITHUB_REF")"
+          echo "SHA=$SHA" >> "$GITHUB_ENV"
+          echo "$GITHUB_REF -> $SHA"
       - name: verifier que le tag pointe sur main
         run: |
           set -euo pipefail
           git fetch --no-tags origin main
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "::error::$GITHUB_SHA is not on main: refusing to release a side branch"
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error::$SHA is not on main: refusing to release a side branch"
             exit 1
           fi
-          echo "$GITHUB_SHA is on main"
+          echo "$SHA is on main"
       - name: attendre le deploiement verifie
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          echo "waiting for the VPS to report factory/production on $GITHUB_SHA"
+          echo "waiting for the VPS to report factory/production on $SHA"
           end=$((SECONDS + 540))
           while [ "$SECONDS" -lt "$end" ]; do
             STATE="$(curl -sS --max-time 20 \
-              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Authorization: Bearer ***" \
               -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/statuses" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/commits/$SHA/statuses" \
               | jq -r '[.[] | select(.context == "factory/production")][0].state // "missing"')"
             echo "status: $STATE"
             case "$STATE" in
               success)
-                echo "deployment of $GITHUB_SHA verified by the VPS"
+                echo "deployment of $SHA verified by the VPS"
                 exit 0
                 ;;
               failure|error)
-                echo "::error::deployment of $GITHUB_SHA failed on the VPS ($STATE); the previous release was restored"
+                echo "::error::deployment of $SHA failed on the VPS ($STATE); the previous release was restored"
                 exit 1
                 ;;
             esac

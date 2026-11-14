@@ -40,6 +40,32 @@ jobs:
           set -e
           docker compose exec -T api python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5).read().decode())"
           docker compose exec -T api python -c "import json,urllib.request;d=json.load(urllib.request.urlopen('http://127.0.0.1:8080/readyz',timeout=5));print(d);assert d['status']=='ready', d;assert all(v['ok'] for v in d['dependencies'].values()), d;print('readyz ok')"
+      - name: preuve de persistance PostgreSQL (SCRUM-22, SCRUM-32)
+        working-directory: deploy/dev
+        run: |
+          set -e
+          docker compose exec -T api python - <<'PY'
+          import json, urllib.request as u
+          B = "http://127.0.0.1:8080/api/v1"
+          def call(method, path, body=None):
+              data = json.dumps(body).encode() if body is not None else None
+              req = u.Request(B + path, data=data, method=method,
+                              headers={"Content-Type": "application/json"})
+              with u.urlopen(req, timeout=10) as r:
+                  return r.status, json.load(r)
+          s, agent = call("POST", "/agents", {"name": "ci-smoke", "description": "pipeline"})
+          assert s == 201, agent
+          s, run = call("POST", "/runs", {"objective": "prove persistence", "agent_id": agent["id"]})
+          assert s == 201 and run["status"] == "queued", run
+          assert call("PATCH", "/runs/" + run["id"], {"status": "running"})[0] == 200
+          s, again = call("GET", "/runs/" + run["id"])
+          assert again["status"] == "running", again
+          s, audit = call("GET", "/audit")
+          assert audit["count"] >= 2, audit
+          print("api ok:", run["id"], "audit rows:", audit["count"])
+          PY
+          docker compose exec -T db psql -U factory -d factory -tAc "select count(*) from runs" | grep -Eq '^[1-9][0-9]*$'
+          echo "postgres persistence: ok"
       - name: arret de la stack DEV
         if: always()
         working-directory: deploy/dev
