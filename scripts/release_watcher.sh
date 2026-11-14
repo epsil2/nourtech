@@ -51,42 +51,21 @@ post_status() { # sha state description
 #   SP<n>-Release    human sprint release tag, e.g. SP2-Release
 # Annotated tags are dereferenced so the commit -- never the tag object -- is what
 # gets validated against main and deployed.
-TAGMAP="$(git ls-remote --tags "https://github.com/$REPO.git" \
-  'refs/tags/release/*' 'refs/tags/SP*-Release' 2>/dev/null | awk '
-{
-  sha = $1; ref = $2; sub(/^refs\/tags\//, "", ref);
-  if (ref ~ /\^\{\}$/) { sub(/\^\{\}$/, "", ref); deref[ref] = sha }
-  else { plain[ref] = sha }
-  if (!(ref in seen)) { seen[ref] = 1; order[++n] = ref }
-}
-END { for (i = 1; i <= n; i++) { t = order[i]; s = (t in deref) ? deref[t] : plain[t]; if (s != "") print t " " s } }')"
-[ -n "$TAGMAP" ] || exit 0
-
-touch "$STATE/deployed-tags" "$STATE/failed-tags" "$STATE/pending-tags"
-
-# Candidates: recognised tag shape, 40-hex commit, not already done
-CANDIDATES=""
-while read -r tag sha; do
-  [ -n "${sha:-}" ] || continue
-  printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$' || continue
-  printf '%s' "$tag" | grep -Eq '^(release/.+|SP[0-9]+-[Rr]elease)$' || continue
-  grep -qx "$sha" "$STATE/deployed-tags" && continue
-  grep -qx "$sha" "$STATE/failed-tags" && continue
-  CANDIDATES="$CANDIDATES$sha|$tag\n"
-done <<<"$TAGMAP"
-[ -n "${CANDIDATES// /}" ] || exit 0
-
-# Order by commit date, newest first
-ordered=""
-while IFS='|' read -r sha tag; do
-  [ -n "${sha:-}" ] || continue
-  date_utc="$(api "https://api.github.com/repos/$REPO/commits/$sha" | sed -n 's/.*"date": "\([^"]*\)".*/\1/p' | tail -1)"
-  ordered="$ordered${date_utc:-0000}|$sha|$tag\n"
-done <<<"$(printf '%b' "$CANDIDATES")"
-BEST="$(printf '%b' "$ordered" | sort -r | head -1)"
-ORDERED_SHA="$(printf '%s' "$BEST" | cut -d'|' -f2)"
-RELEASE_TAG="$(printf '%s' "$BEST" | cut -d'|' -f3)"
-[ -n "$ORDERED_SHA" ] || exit 0
+# Candidate tag -> commit. An annotated tag carries its own object sha, distinct
+# from the commit it points at: deploying the tag object fails the ancestry check
+# below. `git ls-remote` only prints the peeled `^{}` line when the glob is written
+# to match that peeled name, so resolution goes through the refs API instead, in
+# scripts/release_tags.py. The helper returns the newest candidate, whether or not
+# it is already deployed: a re-published tag must still produce an answer for the
+# release job that is waiting on the commit status.
+HELPER="${FACTORY_TAGS_HELPER:-$(dirname "$0")/release_tags.py}"
+[ -x "$HELPER" ] || HELPER="${FACTORY_APP_DIR:-/opt/agent-factory/app}/scripts/release_tags.py"
+[ -f "$HELPER" ] || { log "fatal: release_tags.py not found"; exit 1; }
+TAG_LINE="$(python3 "$HELPER" | head -1)" || exit 0
+[ -n "$TAG_LINE" ] || { log "idle: no release tag to consider"; exit 0; }
+read -r RELEASE_TAG ORDERED_SHA _WHEN <<<"$TAG_LINE"
+printf '%s' "$ORDERED_SHA" | grep -Eq '^[0-9a-f]{40}$' || { log "fatal: bad sha from release_tags.py"; exit 1; }
+log "candidate $RELEASE_TAG -> $ORDERED_SHA"
 
 # The tag must point at a commit already on main (never deploy a side branch)
 CMP="$(api "https://api.github.com/repos/$REPO/compare/main...$ORDERED_SHA" | sed -n 's/.*"status": "\([a-z]*\)".*/\1/p' | head -1)"
@@ -94,6 +73,15 @@ if [ "$CMP" != "behind" ] && [ "$CMP" != "identical" ]; then
   log "refused $ORDERED_SHA ($RELEASE_TAG): not on main (compare status=${CMP:-unknown})"
   post_status "$ORDERED_SHA" "error" "commit is not on main"
   echo "$ORDERED_SHA" >>"$STATE/failed-tags"
+  exit 0
+fi
+
+# Idempotence: an already released commit answers the waiting release job with its
+# verdict instead of staying silent, so publishing the same tag twice (or re-running
+# the workflow) is safe and can never downgrade the running stack.
+if grep -qxF "$ORDERED_SHA" "$STATE/deployed-tags" 2>/dev/null; then
+  log "already released $ORDERED_SHA ($RELEASE_TAG)"
+  post_status "$ORDERED_SHA" "success" "already deployed on the VPS ($RELEASE_TAG)"
   exit 0
 fi
 
