@@ -8,6 +8,7 @@ VPS watcher turns into a real deployment and a verified commit status.
 from __future__ import annotations
 
 import re
+import importlib.util
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,7 +49,7 @@ def test_quality_gate_follows_dev():
     assert "needs: dev" in qualite
     assert "pytest" in qualite
     assert "cd ../prod" in qualite
-    assert "secret scan: ok" in qualite
+    assert "python scripts/secret_scan.py ." in qualite
 
 
 def test_production_needs_a_human_tag_not_a_merge():
@@ -90,17 +91,13 @@ def test_timer_runs_every_minute():
 
 
 def test_pipeline_carries_no_credential():
-    patterns = (
-        r"glpat-[A-Za-z0-9_-]{20,}",
-        r"gh[pousr]_[A-Za-z0-9]{20,}",
-        r"github_pat_[A-Za-z0-9_]{20,}",
-        r"ATATT[A-Za-z0-9_=-]{10,}",
-        r"-----BEGIN OPENSSH PRIVATE KEY-----",
-    )
-    for path in (DEPLOY, RELEASE, CI, WATCHER):
-        text = path.read_text(encoding="utf-8")
-        for pattern in patterns:
-            assert not re.search(pattern, text), f"{pattern} in {path.name}"
+    spec = importlib.util.spec_from_file_location("secret_scan", ROOT / "scripts" / "secret_scan.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.scan_tree(ROOT) == []
+    # the gate itself runs the same scanner, not a grep one-liner that can match
+    # its own pattern in the workflow file
+    assert "python scripts/secret_scan.py ." in job(DEPLOY.read_text(encoding="utf-8"), "qualite")
 
 
 def test_gitlab_path_is_removed():
