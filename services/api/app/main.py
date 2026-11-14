@@ -24,6 +24,7 @@ from .api_workflow import router as workflow_router
 from .api_eval import router as eval_router
 from .api_plans import router as plans_router
 from .api_release import router as release_router
+from .api_specs import router as specs_router
 from .api_obs import router as obs_router
 from .store import build_store
 
@@ -71,13 +72,19 @@ app.include_router(workflow_router)
 app.include_router(eval_router)
 app.include_router(plans_router)
 app.include_router(release_router)
+app.include_router(specs_router)
 app.include_router(obs_router)
 
 
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     """Liveness: the process is up. Never touches dependencies."""
-    return {"status": "ok", "env": os.getenv("FACTORY_ENV", "dev")}
+    return {
+        "status": "ok",
+        "env": os.getenv("FACTORY_ENV", "dev"),
+        # Name of the store implementation, not a probe: liveness must stay dependency-free.
+        "store": "pg" if os.getenv("FACTORY_STORE", "pg").lower().startswith("pg") else "memory",
+    }
 
 
 @app.get("/readyz")

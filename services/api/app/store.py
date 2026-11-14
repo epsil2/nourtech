@@ -132,6 +132,19 @@ CREATE INDEX IF NOT EXISTS workflows_status_idx ON workflows (status);
 CREATE INDEX IF NOT EXISTS checkpoints_workflow_idx ON checkpoints (workflow_id, seq);
 CREATE INDEX IF NOT EXISTS runs_status_idx ON runs (status);
 CREATE INDEX IF NOT EXISTS audit_entity_idx ON audit_events (entity_type, entity_id);
+CREATE TABLE IF NOT EXISTS agent_specs (
+    id           uuid PRIMARY KEY,
+    slug         text NOT NULL,
+    status       text NOT NULL DEFAULT 'draft',
+    payload      jsonb NOT NULL,
+    agent_id     uuid NULL REFERENCES agents(id) ON DELETE SET NULL,
+    approved_by  text NULL,
+    approved_at  timestamptz NULL,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS agent_specs_status_idx ON agent_specs (status);
+CREATE INDEX IF NOT EXISTS agent_specs_slug_idx ON agent_specs (slug);
 """
 
 
@@ -153,6 +166,7 @@ class MemoryStore:
         self.workflows: dict[str, dict[str, Any]] = {}
         self.checkpoints: list[dict[str, Any]] = []
         self.plans: dict[str, dict[str, Any]] = {}
+        self.agent_specs: dict[str, dict[str, Any]] = {}
         self.evaluations: list[dict[str, Any]] = []
         self.artifacts: dict[str, dict[str, Any]] = {}
         self.releases: dict[str, dict[str, Any]] = {}
@@ -232,6 +246,40 @@ class MemoryStore:
         row["status"] = status
         row["updated_at"] = _now()
         row["payload"] = {**row["payload"], "status": status}
+        return row
+
+    # agent specifications (Sprint 2)
+    def create_agent_spec(self, slug: str, payload: dict[str, Any]) -> dict[str, Any]:
+        row = {
+            "id": new_id(),
+            "slug": slug,
+            "status": "draft",
+            "payload": payload,
+            "agent_id": None,
+            "approved_by": None,
+            "approved_at": None,
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
+        self.agent_specs[row["id"]] = row
+        return row
+
+    def list_agent_specs(self, limit: int = 50) -> list[dict[str, Any]]:
+        return sorted(self.agent_specs.values(), key=lambda r: r["created_at"], reverse=True)[:limit]
+
+    def get_agent_spec(self, spec_id: str) -> dict[str, Any] | None:
+        return self.agent_specs.get(spec_id)
+
+    def approve_agent_spec(self, spec_id: str, agent_id: str, approved_by: str) -> dict[str, Any] | None:
+        row = self.agent_specs.get(spec_id)
+        if row is None:
+            return None
+        row["status"] = "approved"
+        row["agent_id"] = agent_id
+        row["approved_by"] = approved_by
+        row["approved_at"] = _now()
+        row["updated_at"] = _now()
+        row["payload"] = {**row["payload"], "status": "approved"}
         return row
 
     # plans (SCRUM-27, SCRUM-37, SCRUM-38)
@@ -559,6 +607,52 @@ class PgStore:
                 "UPDATE runs SET status = %s, updated_at = now() WHERE id = %s "
                 "RETURNING id, agent_id, objective, status, created_at, updated_at",
                 (status, run_id),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return _serialise(row) if row else None
+
+    # agent specifications (Sprint 2)
+    def create_agent_spec(self, slug: str, payload: dict[str, Any]) -> dict[str, Any]:
+        import json as _json
+
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO agent_specs (id, slug, payload) VALUES (%s, %s, %s::jsonb) "
+                "RETURNING id, slug, status, payload, agent_id, approved_by, approved_at, created_at, updated_at",
+                (new_id(), slug, _json.dumps(payload)),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return _serialise(row)
+
+    def list_agent_specs(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, slug, status, payload, agent_id, approved_by, approved_at, created_at, updated_at "
+                "FROM agent_specs ORDER BY created_at DESC LIMIT %s",
+                (limit,),
+            )
+            return [_serialise(r) for r in cur.fetchall()]
+
+    def get_agent_spec(self, spec_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, slug, status, payload, agent_id, approved_by, approved_at, created_at, updated_at "
+                "FROM agent_specs WHERE id = %s",
+                (spec_id,),
+            )
+            row = cur.fetchone()
+            return _serialise(row) if row else None
+
+    def approve_agent_spec(self, spec_id: str, agent_id: str, approved_by: str) -> dict[str, Any] | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE agent_specs SET status = 'approved', agent_id = %s, approved_by = %s, "
+                "approved_at = now(), updated_at = now(), "
+                "payload = jsonb_set(payload, '{status}', '\"approved\"'::jsonb) WHERE id = %s "
+                "RETURNING id, slug, status, payload, agent_id, approved_by, approved_at, created_at, updated_at",
+                (agent_id, approved_by, spec_id),
             )
             row = cur.fetchone()
             conn.commit()

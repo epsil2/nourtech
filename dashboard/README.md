@@ -48,6 +48,26 @@ CAMILIA_HTPASSWD=/tmp/htpasswd-dev docker compose -f compose.yaml -f compose.dev
 python3 scripts/smoke_camilia.py http://127.0.0.1:8090 soufiane:devonly
 ```
 
+## Sprint 2 — création d'agent (wizard)
+
+La page **Agents** porte le flux central : `Create New Agent → spec générée → revue → approbation`.
+
+- La spécification est produite par `services/api/app/specification.py` : **déterministe**, sans appel à un
+  modèle, même intake = même document. Chaque compétence sélectionnée produit une story avec ses tâches,
+  ses critères Given/When/Then et une porte d'approbation humaine explicite.
+- `POST /api/v1/specifications/draft` ne stocke rien (aperçu) ; `POST /api/v1/specifications` enregistre
+  le brouillon ; `POST /api/v1/specifications/{id}/approve` est la seule voie qui **enregistre l'agent** et
+  laisse une trace d'audit (`specification.approved`, `agent.registered`).
+- **Aucun ticket Jira n'est créé ici** : la génération du backlog Jira est le Sprint 3, et elle exigera
+  l'approbation du backlog. Le bouton s'appelle « Approve & Create Jira Backlog » parce que c'est le geste
+  attendu par l'utilisateur, mais il s'arrête à l'enregistrement de l'agent et l'écran le dit.
+- Rien n'est inventé : sans cible de KPI, la spécification écrit « à définir » ; un intake contenant un
+  secret (token, mot de passe, clé) est rejeté en 422.
+
+Endpoints : `GET /api/v1/specifications/catalog`, `POST /api/v1/specifications/draft`,
+`POST /api/v1/specifications`, `GET /api/v1/specifications`, `GET /api/v1/specifications/{id}`,
+`POST /api/v1/specifications/{id}/approve`.
+
 ## Déploiement (nécessite un accord explicite)
 
 ```bash
@@ -67,7 +87,10 @@ labels : certificat Let's Encrypt automatique, aucune modification de sa configu
 
 ```
 src/lib/api.ts        types et client de l'API réelle
+src/lib/specs.ts      types de la spécification + endpoints
+src/components/Wizard.tsx  wizard 3 étapes + écran de revue
 src/pages/Overview.tsx  vue d'ensemble (données live)
+src/pages/Agents.tsx  registre des agents et des spécifications
 src/components/       shell, KPI, panneaux
 compose.yaml          stack isolée + labels Traefik
 nginx.conf            bundle statique + proxy /api + basic auth

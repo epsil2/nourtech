@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Sidebar, NAV } from "./components/Sidebar";
 import type { PageKey } from "./components/Sidebar";
+import { Agents } from "./pages/Agents";
 import { Overview } from "./pages/Overview";
 import { Soon } from "./pages/Soon";
 import { api } from "./lib/api";
@@ -24,8 +25,8 @@ export default function App() {
     let alive = true;
     const check = () =>
       api
-        .get<{ status?: string; env?: string }>("/healthz")
-        .then((h) => alive && setHealth({ ok: true, label: `${h.status ?? "ok"} · env ${h.env ?? "—"} · store PgStore` }))
+        .get<{ status?: string; env?: string; store?: string }>("/healthz")
+        .then((h) => alive && setHealth({ ok: true, label: `${h.status ?? "ok"} · env ${h.env ?? "—"} · store ${h.store === "memory" ? "memory (volatile)" : "PostgreSQL"}` }))
         .catch(() => alive && setHealth({ ok: false, label: "l'API ne répond pas — vérifier agent-factory-prod-api" }));
     check();
     const timer = setInterval(check, 30000);
@@ -47,7 +48,7 @@ export default function App() {
       <Sidebar current={page} onNavigate={go} apiOk={health.ok} apiLabel={health.label} />
       <main>
         {page === "overview" && <Overview onNewAgent={() => go("agents")} />}
-        {page === "agents" && <Soon title="Agents" sprint="Sprint 2" body="Registre des agents, wizard de spécification en 8 sections, écran de revue et approbation du backlog Jira. Le socle de données est déjà servi par l'API." />}
+        {page === "agents" && <Agents />}
         {page === "backlog" && <Soon title="Backlog Jira" sprint="Sprint 3" body="Epics, Features, Stories et Tasks du projet SCRUM lus en direct — et créés uniquement après votre approbation explicite." />}
         {page === "sprints" && <Soon title="Sprints" sprint="Sprint 4" body="Avancement par sprint, stories bloquées, dépendances et reste-à-faire, aligné sur le board 1." />}
         {page === "github" && <Soon title="GitHub" sprint="Sprint 4" body="Dépôts, branches liées aux clés Jira, commits et pull requests avec statut de revue." />}
