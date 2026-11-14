@@ -102,9 +102,10 @@ def create_issue(
         )
     except Exception as exc:  # noqa: BLE001 - mapped to HTTP below
         raise _write_guard(exc) from exc
+    effective_project = (body.project or (writer.projects[0] if writer.projects else None))
     _audit(request, x_actor, "jira.issue.created" if row["created"] else "jira.issue.reused",
            row["key"], {"summary": body.summary, "type": body.issue_type,
-                        "model": jira_write.MARKER_LABEL, "project": body.project})
+                        "model": jira_write.MARKER_LABEL, "project": effective_project})
     return row
 
 
