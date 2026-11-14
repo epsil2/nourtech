@@ -103,6 +103,7 @@ services:
       - "127.0.0.1:8081:8080"
     networks:
       - factory-internal
+      - factory-edge
     <<: *hardening
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
@@ -118,10 +119,20 @@ services:
     logging: *default-logging
 
 networks:
+  # db and cache live here and nowhere else: no route off the host.
   factory-internal:
     name: agent-factory-prod-internal
     driver: bridge
     internal: true
+    labels:
+      com.nourtech.owner: ai-agent-factory
+      com.nourtech.env: prod
+  # Docker does not create the loopback DNAT for a port published on an internal
+  # network, so the api needs a second, routable bridge to be reachable from the
+  # host on 127.0.0.1:8081. Only the api is attached to it.
+  factory-edge:
+    name: agent-factory-prod-edge
+    driver: bridge
     labels:
       com.nourtech.owner: ai-agent-factory
       com.nourtech.env: prod

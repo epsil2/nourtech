@@ -51,11 +51,23 @@ def test_no_other_service_publishes_a_port(compose):
         assert not svc.get("ports"), f"{name} publishes {svc['ports']}"
 
 
-def test_network_is_internal(compose):
+def test_data_services_have_no_route_off_the_host(compose):
+    """db and cache sit on the internal network only."""
     networks = compose["networks"]
-    assert list(networks) == ["factory-internal"]
     assert networks["factory-internal"]["internal"] is True
     assert networks["factory-internal"]["name"] == "agent-factory-prod-internal"
+    for name in ("db", "cache"):
+        assert compose["services"][name]["networks"] == ["factory-internal"], name
+
+
+def test_api_is_the_only_service_on_the_edge_network(compose):
+    """Docker publishes no loopback DNAT for a port on an internal network, so the
+    api needs a routable bridge: exactly one service may sit on it."""
+    networks = compose["networks"]
+    assert networks["factory-edge"].get("internal") is not True
+    on_edge = [n for n, s in compose["services"].items() if "factory-edge" in (s["networks"] or [])]
+    assert on_edge == ["api"], on_edge
+    assert "factory-internal" in compose["services"]["api"]["networks"]
 
 
 def test_every_service_restarts_and_is_hardened(compose):

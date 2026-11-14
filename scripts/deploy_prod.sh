@@ -88,7 +88,22 @@ rollback() {
   return 1
 }
 
-trap 'rollback || true' ERR
+# A failure raised by fail() is an explicit `exit`, which does NOT fire an ERR
+# trap: the cleanup must therefore hang off EXIT.
+cleanup() {
+  local rc=$?
+  trap - EXIT
+  if [ "$rc" -ne 0 ]; then
+    log "deployment failed (rc=$rc)"
+    if [ "${STACK_TOUCHED:-0}" = "1" ]; then
+      rollback || true
+    else
+      log "stack not touched: nothing to roll back"
+    fi
+  fi
+  exit "$rc"
+}
+trap cleanup EXIT
 
 # --- 4. build, start, smoke ------------------------------------------------
 backup_db
@@ -96,6 +111,7 @@ backup_db
 log "building api image agent-factory-api:${TAG}"
 docker build -t "agent-factory-api:${TAG}" "$ROOT/services/api" >/dev/null
 
+STACK_TOUCHED=1
 log "starting the stack"
 FACTORY_IMAGE_TAG="$TAG" compose up -d --wait --wait-timeout 240
 
@@ -109,7 +125,6 @@ done
 
 curl -fsS --max-time 3 "$HEALTH_URL/healthz" | grep -q '"status":"ok"' || fail "smoke test failed: $HEALTH_URL/healthz"
 
-trap - ERR
 printf '%s\n' "$TAG" > "$STATE_DIR/last-good"
 printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$TAG" >> "$STATE_DIR/deploy.log"
 
