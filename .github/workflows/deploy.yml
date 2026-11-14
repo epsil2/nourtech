@@ -92,30 +92,47 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: production
+    permissions:
+      contents: write # publish the release tag
+      statuses: read # read the deployment result reported by the VPS
     steps:
       - uses: actions/checkout@v4
-      - name: cle de deploiement
-        env:
-          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-        run: |
-          if [ -z "$KEY" ]; then
-            echo "::error::DEPLOY_SSH_KEY is not set on the production environment: nothing was deployed"
-            exit 1
-          fi
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$KEY" > ~/.ssh/deploy
-          chmod 600 ~/.ssh/deploy
-          cp deploy/prod/known_hosts ~/.ssh/known_hosts
-      - name: deploiement
+        with:
+          fetch-depth: 0
+      - name: publier le tag de release
         run: |
           set -euo pipefail
           SHA="$(git rev-parse HEAD)"
-          echo "deploying $SHA to $DEPLOY_HOST"
-          git archive --format=tar HEAD \
-            | ssh -i ~/.ssh/deploy -o IdentitiesOnly=yes -o BatchMode=yes \
-                "$DEPLOY_USER@$DEPLOY_HOST" "deploy $SHA"
-      - name: resume
-        if: always()
+          git tag -f "release/$SHA"
+          git push origin "refs/tags/release/$SHA"
+          echo "release/$SHA published"
+      - name: attendre le deploiement verifie
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "commit ${{ github.sha }} / run ${{ github.run_id }} / statut ${{ job.status }}"
-          echo "verification: ssh $DEPLOY_USER@$DEPLOY_HOST 'cat /opt/agent-factory/state/last-good'"
+          set -euo pipefail
+          SHA="$(git rev-parse HEAD)"
+          echo "waiting for the VPS to report factory/production on $SHA"
+          end=$((SECONDS + 540))
+          while [ "$SECONDS" -lt "$end" ]; do
+            STATE="$(curl -sS --max-time 20 \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/commits/$SHA/statuses" \
+              | jq -r '[.[] | select(.context == "factory/production")][0].state // "missing"')"
+            echo "status: $STATE"
+            case "$STATE" in
+              success)
+                echo "deployment of $SHA verified by the VPS"
+                echo "verified: /opt/agent-factory/state/last-good holds $SHA on the VPS"
+                exit 0
+                ;;
+              failure|error)
+                echo "::error::deployment of $SHA failed on the VPS ($STATE); the previous release was restored"
+                exit 1
+                ;;
+            esac
+            sleep 20
+          done
+          echo "::error::no deployment status within 9 minutes (VPS watcher: journalctl -u factory-release-watcher)"
+          exit 1

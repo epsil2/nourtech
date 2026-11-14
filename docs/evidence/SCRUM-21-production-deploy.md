@@ -11,12 +11,11 @@ Date : 2026-11-14 · Branche : `feature/scrum-21-gitlab-production-pipeline` · 
   `workflow_dispatch` avec `confirm=deploy`, `needs: qualite`, environnement
   `production`, `main` uniquement, `concurrency: production-deploy`.
 - `.github/workflows/ci.yml` — gates sur PR et sur `main`.
-- `/opt/agent-factory/bin/receive.sh` — commande forcée de la clé de déploiement :
-  n'accepte que `deploy <sha 40 hex>`, extrait l'archive, `rsync --delete`
-  (en préservant `deploy/prod/.env`), lance `scripts/deploy_prod.sh`.
-- `/root/.ssh/authorized_keys` — clé `github-actions-deploy@nourtech` avec
-  `restrict,command="/opt/agent-factory/bin/receive.sh"`.
-- `deploy/prod/known_hosts` — clé d'hôte du VPS épinglée (publique).
+- `scripts/release_watcher.sh` + `deploy/systemd/factory-release-watcher.{service,timer}`
+  — watcher VPS (60 s) : vérifie que le sha tagué est un ancêtre de `main`,
+  télécharge l'archive, `rsync --delete` vers `/opt/agent-factory/app` en
+  préservant `deploy/prod/.env`, lance `scripts/deploy_prod.sh`, puis renvoie le
+  statut `factory/production` (success/failure) que le job attend.
 - `tests/test_deploy_pipeline.py` — 8 tests de politique.
 - `.gitlab-ci.yml`, `.github/workflows/mirror-to-gitlab.yml` et
   `tests/test_gitlab_pipeline.py` supprimés : pas d'accès GitLab, chemin abandonné
