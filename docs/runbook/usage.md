@@ -107,10 +107,12 @@ GET /api/v1/integrations/jira/schema    # types et transitions disponibles
 
 ## Écarts connus au 2026-11-14 (mis à jour après déploiement)
 
-- Prod redéployée en `41bcc13` : les **43 routes** sont servies sur `127.0.0.1:8081`
+- Prod redéployée en `40031bd` : **46 routes** servies sur `127.0.0.1:8081`
   (`/healthz` et `/readyz` verts, base migrée à 11 tables).
-- Intégration Jira **non configurée** en prod (`configured:false`) : les routes
-  `/api/v1/integrations/jira/*` répondent mais sans backlog réel.
+- Intégration Jira **branchée en lecture et en écriture** en prod
+  (`configured:true`, `write_enabled:true`, projet autorisé `SCRUM`) — voir
+  `docs/runbook/jira-lecture-ecriture.md`. Les identifiants vivent hors dépôt, dans
+  `/opt/agent-factory/secrets/jira.env`.
 - Chaîne release volontairement fermée : sans artefact construit par le workflow CI `ci`,
   `readiness` et `plan` répondent 404.
 - Aucune exposition publique (bind 127.0.0.1) : accès par SSH ou tunnel.

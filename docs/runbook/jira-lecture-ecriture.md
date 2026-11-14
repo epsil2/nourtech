@@ -73,6 +73,20 @@ s'il existe (`FACTORY_SECRETS_FILE` pour le déplacer). Un `docker compose … u
 lancé à la main sans ce second `--env-file` relancerait l'API **sans** Jira :
 toujours passer par le script, ou ajouter l'option à la main.
 
+## Vérifié en prod le 2026-11-14 (image `40031bd`)
+
+- `GET /integrations/jira/status` → `{"configured":true,"site":"https://nourtech.atlassian.net","write_enabled":true,"write_projects":["SCRUM"],"read_only":false}`.
+- Lecture : `jql=project = SCRUM ORDER BY created DESC` → 3 items, statuts réels du board.
+- Écriture : `POST /issues` a créé **SCRUM-52** « Publier un radar IA hebdomadaire sur
+  nourredine.tech » (labels `ai-factory`, `veille`), rejoué à l'identique →
+  `{"key":"SCRUM-52","created":false}` (aucun doublon).
+- Commentaire accepté (id `10026`), transitions disponibles `To Do / In Progress /
+  In Review / Done`, passage `To Do → In Progress → To Do` effectué, état final vérifié
+  par relecture JQL.
+- `GET /observability/audit` contient les cinq événements, tous attribués à `soufiane` :
+  `jira.issue.created`, `jira.issue.reused`, `jira.issue.commented`,
+  `jira.issue.transitioned` ×2.
+
 ## Ce qui reste volontairement fermé
 
 - Rien n'écrit dans Jira sans `x-actor` ni audit.

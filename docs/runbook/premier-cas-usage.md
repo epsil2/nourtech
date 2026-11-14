@@ -129,10 +129,22 @@ POST /api/v1/releases/<id>/publish          -> published
 
 ## 7. Pour aller plus loin sur ce cas
 
-1. **Brancher Jira** : `/api/v1/integrations/jira/status` répond `configured:false` en prod.
-   Il faut `JIRA_SITE_URL`, `JIRA_ACCOUNT_EMAIL`, `JIRA_API_TOKEN` dans `deploy/prod/.env`,
-   puis redéployer. Sans cela, `source_key` reste une simple étiquette et la plateforme ne
-   relit pas le backlog.
+1. **Jira est branché** depuis le 2026-11-14 (lecture et écriture, projet `SCRUM`).
+   La story de ce cas existe : **SCRUM-52** « Publier un radar IA hebdomadaire sur
+   nourredine.tech ». Pour rattacher une demande à un ticket existant :
+
+   ```bash
+   curl -s -G $BASE/api/v1/integrations/jira/issues \
+        --data-urlencode 'jql=key = SCRUM-52'                     # statut réel
+   curl -s -X POST $BASE/api/v1/integrations/jira/issues/SCRUM-52/comment \
+        -H 'content-type: application/json' -H 'x-actor: soufiane' \
+        -d '{"text":"PRD validé — /api/v1/prd/<id>/markdown"}'
+   curl -s -X POST $BASE/api/v1/integrations/jira/issues/SCRUM-52/transition \
+        -H 'content-type: application/json' -H 'x-actor: soufiane' \
+        -d '{"target":"In Progress"}'
+   ```
+
+   Détails et verrous : `docs/runbook/jira-lecture-ecriture.md`.
 2. **Produire le vrai artefact** depuis GitHub Actions (workflow nommé `ci`), sinon la
    chaîne release restera fermée.
 3. **Enrichir le PRD** : la génération est un gabarit. Si vous voulez des critères
