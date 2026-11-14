@@ -123,20 +123,76 @@ def test_request_too_short_is_a_422_not_a_crash(client):
     assert r.status_code == 422
 
 
-def test_delivery_has_two_gates_in_order(client):
+GOOD_OUTPUT = """## Livraison
+1. Le backlog est implémenté et testé.
+2. La preuve est consignée dans docs/evidence.
+Acceptance criteria: la release est signée et le run est cité.
+"""
+
+LEAKY_OUTPUT = GOOD_OUTPUT + "\njeton: gh" + "p_" + "B" * 24
+
+
+def _evaluate(client, subject, output, dataset="quality"):
+    r = client.post(
+        "/api/v1/evaluations",
+        json={"subject": subject, "dataset": dataset, "output": output, "threshold": 0.8},
+    )
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def _delivery(client):
     backlog = {"items": [{"index": 1, "acceptance": "une release signée", "status": "planned"}]}
-    wf = _start(client, "delivery", {"backlog": backlog})
+    return _start(client, "delivery", {"backlog": backlog})
+
+
+def test_delivery_has_two_gates_in_order(client):
+    wf = _delivery(client)
     assert wf["current_step"] == "implement"
+    _evaluate(client, wf["id"], GOOD_OUTPUT)
 
     first = _decide(client, wf["id"], "approved", note="build")
     assert first.status_code == 200
     assert first.json()["current_step"] == "release_ready"
     assert first.json()["state"]["qa"]["passed"] is True
+    assert first.json()["state"]["qa"]["evaluation_score"] == 1.0
 
     second = _decide(client, wf["id"], "approved", note="go")
     assert second.status_code == 200
     assert second.json()["status"] == "completed"
     assert second.json()["state"]["release"]["ready"] is True
+
+
+def test_release_is_blocked_when_no_evaluation_exists(client):
+    wf = _delivery(client)
+    assert _decide(client, wf["id"], "approved").json()["current_step"] == "release_ready"
+
+    blocked = _decide(client, wf["id"], "approved", note="go")
+    assert blocked.status_code == 409
+    assert "no evaluation" in blocked.json()["detail"]
+
+    # the workflow is still waiting on the same gate, so it can resume once the
+    # missing evidence exists — a failed gate must not destroy the run
+    waiting = client.get(f"/api/v1/workflows/{wf['id']}").json()
+    assert waiting["status"] == "awaiting_approval"
+    assert waiting["current_step"] == "release_ready"
+
+    _evaluate(client, wf["id"], GOOD_OUTPUT)
+    retry = _decide(client, wf["id"], "approved", note="go, avec preuve")
+    assert retry.status_code == 200
+    assert retry.json()["status"] == "completed"
+
+
+def test_a_failing_evaluation_blocks_the_release(client):
+    wf = _delivery(client)
+    evaluation = _evaluate(client, wf["id"], LEAKY_OUTPUT, dataset="safety")
+    assert evaluation["passed"] is False
+    assert _decide(client, wf["id"], "approved").json()["current_step"] == "release_ready"
+
+    blocked = _decide(client, wf["id"], "approved", note="go")
+    assert blocked.status_code == 409
+    assert "below threshold" in blocked.json()["detail"] or "quality gate failed" in blocked.json()["detail"]
+    assert "release" not in client.get(f"/api/v1/workflows/{wf['id']}").json()["state"]
 
 
 def test_delivery_without_a_backlog_is_refused(client):

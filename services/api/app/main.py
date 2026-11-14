@@ -20,6 +20,8 @@ from .api import router
 from .api_jira import router as jira_router
 from .api_prd import router as prd_router
 from .api_workflow import router as workflow_router
+from .api_eval import router as eval_router
+from .api_plans import router as plans_router
 from .store import build_store
 
 
@@ -62,6 +64,8 @@ app.include_router(router)
 app.include_router(jira_router)
 app.include_router(prd_router)
 app.include_router(workflow_router)
+app.include_router(eval_router)
+app.include_router(plans_router)
 
 
 @app.get("/healthz")
