@@ -1,45 +1,46 @@
 # Runbook — mise en production de la factory
 
-Un seul chemin : **GitHub Actions** `.github/workflows/deploy.yml`, chaîne
-**DEV → Qualité → Production**. Le déploiement lui-même est exécuté sur le VPS par
-`factory-release-watcher.timer`, qui appelle `scripts/deploy_prod.sh` : le pipeline
-ne fait rien qu'un opérateur ne puisse faire à la main.
+Un seul chemin : **GitHub Actions**, chaîne **DEV → Qualité → Production**, avec un
+déploiement exécuté sur le VPS par `factory-release-watcher.timer`. Le pipeline
+n'utilise que `scripts/deploy_prod.sh`, comme un opérateur.
 
 ## 1. Chaîne et gates
 
 | Étape | Déclencheur | Ce qui doit être vrai |
 |---|---|---|
-| `ci` (`.github/workflows/ci.yml`) | pull request, push sur `main` | tests verts, isolation Compose vérifiée, aucun secret commité |
-| `deploy` job `dev` | `workflow_dispatch` sur `main` | image construite, vraie stack DEV (Postgres + Redis + API) démarrée, `/healthz` et `/readyz` répondent, stack détruite ensuite |
-| `deploy` job `qualite` | après `dev` | tests, `docker compose config` sur dev **et** prod, scan de secrets |
-| `deploy` job `production` | après `qualite`, `confirm=deploy` | environnement `production` approuvé, branche `main`, un seul déploiement à la fois (`concurrency`), tag `release/<sha>` publié puis résultat vérifié |
+| `ci` | pull request, push sur `main` | tests verts, isolation Compose, aucun secret commité |
+| `deploy` job `dev` | **chaque merge sur `main`** | image construite, vraie stack DEV (Postgres + Redis + API) démarrée, `/healthz` et `/readyz` répondent, stack détruite ensuite |
+| `deploy` job `qualite` | après `dev` | tests, `docker compose config` dev **et** prod, scan de secrets |
+| `release` job `production` | **tag `release/<sha>` publié par un humain** | le sha est un ancêtre de `main`, un seul déploiement à la fois, résultat vérifié par statut de commit |
 
-Rien ne part en production sur un simple merge : il faut lancer le workflow à la main.
+Deux moitiés volontairement séparées : un merge sur `main` prouve que le code
+tourne (DEV + qualité), et **rien ne part en production sans un tag** — c'est le
+Go/No-Go humain, il est daté, signé et visible dans l'historique du dépôt.
 
 ## 2. Déployer
 
-1. Onglet **Actions** → workflow **deploy** → **Run workflow**, branche `main`.
-2. Champ `confirm` : taper exactement `deploy`.
-3. Approuver le job `production` si l'environnement `production` demande un reviewer.
-4. Attendre : le job `production` publie `release/<sha>`, le VPS déploie sous
-   ~1 minute et renvoie le statut `factory/production` sur le commit. Le job passe
-   au vert seulement quand ce statut est `success`.
+1. Récupérer le sha de `main` à livrer : `git ls-remote origin refs/heads/main`.
+2. Publier le tag de release, au choix :
+   - GitHub → **Releases** → *Draft a new release* → tag `release/<sha>` → *Publish* ;
+   - ou en ligne de commande : `git tag release/<sha> <sha> && git push origin release/<sha>`.
+3. Le workflow `release` démarre, vérifie que le sha est sur `main`, puis attend.
+4. Le watcher du VPS (≤ 60 s) déploie et renvoie `factory/production` ; le job
+   passe au vert seulement sur `success`. En cas d'échec il est rouge et le
+   rollback a déjà eu lieu.
 
 ## 3. Ce que fait le watcher du VPS
 
-`factory-release-watcher.timer` (systemd, toutes les 60 s) exécute
-`/opt/agent-factory/bin/release_watcher.sh` :
+`factory-release-watcher.timer` (systemd, 60 s) exécute `/opt/agent-factory/bin/release_watcher.sh` :
 
-1. liste les tags `release/<sha 40 hex>` du dépôt ;
-2. ignore ceux déjà déployés (`state/deployed-tags`) ou déjà en échec (`state/failed-tags`) ;
+1. liste les tags `release/<sha 40 hex>` ;
+2. ignore ceux déjà déployés (`state/deployed-tags`) ou en échec (`state/failed-tags`) ;
 3. refuse un sha qui n'est pas un ancêtre de `main` (`compare/main...<sha>`) ;
-4. poste le statut `pending`, télécharge l'archive du sha, `rsync --delete` vers
+4. poste `pending`, télécharge l'archive du sha, `rsync --delete` vers
    `/opt/agent-factory/app` en préservant `deploy/prod/.env` ;
-5. lance `scripts/deploy_prod.sh` avec `FACTORY_IMAGE_TAG=<sha>` : préflight
-   RAM/disque → `pg_dumpall` dans `state/../backups/` → build → `up -d --wait` →
-   smoke `/healthz` + `/readyz` → `state/last-good` → rollback sur le tag
-   précédent si une étape échoue ;
-6. poste `success` ou `failure` — c'est ce statut qui décide de la couleur du job.
+5. lance `deploy_prod.sh` avec `FACTORY_IMAGE_TAG=<sha>` : préflight RAM/disque →
+   `pg_dumpall` → build → `up -d --wait` → smoke `/healthz` + `/readyz` →
+   `state/last-good` → rollback sur le tag précédent si une étape échoue ;
+6. poste `success` ou `failure`, qui décide de la couleur du job.
 
 Aucun runner GitHub ne touche le VPS : ni clé SSH, ni shell, ni docker.
 
@@ -53,7 +54,7 @@ tail -40 /opt/agent-factory/state/release-watcher.log
 systemctl list-timers factory-release-watcher.timer
 ```
 
-Attendu : le sha du run, `database ok, cache ok`, 3 conteneurs `healthy`.
+Attendu : le sha du tag, `database ok, cache ok`, 3 conteneurs `healthy`.
 
 ## 5. Rollback
 
@@ -63,18 +64,16 @@ FACTORY_IMAGE_TAG=$(cat /opt/agent-factory/state/previous-good) ./scripts/deploy
 ```
 
 `deploy_prod.sh` écrit `state/previous-good` avant chaque déploiement et fait ce
-rollback tout seul si le smoke test échoue ; le job GitHub passe alors au rouge.
-Restauration de la base si nécessaire : `psql -f /opt/agent-factory/backups/<dump>.sql`.
+rollback tout seul si le smoke test échoue. Base : `psql -f /opt/agent-factory/backups/<dump>.sql`.
 
 ## 6. Panne du watcher
 
 - `systemctl status factory-release-watcher.timer` : doit être `active`.
-- `journalctl -u factory-release-watcher.service -n 50` : erreurs de jeton, de
-  téléchargement ou de déploiement.
-- Le jeton lu par le watcher est dans `/root/.hermes/secrets/github.env` (600) ;
-  il doit garder `Contents: Read` et `Commit statuses: Write` (et `Metadata: Read`).
-- Un sha en échec est mémorisé dans `state/failed-tags` : pour réessayer,
-  `sed -i '/<sha>/d' /opt/agent-factory/state/failed-tags` puis relancer le timer.
+- `journalctl -u factory-release-watcher.service -n 50` : jeton, téléchargement, déploiement.
+- Jeton lu dans `/root/.hermes/secrets/github.env` (600) : `Contents: Read` +
+  `Commit statuses: Write` + `Metadata: Read`.
+- Un sha en échec est mémorisé : `sed -i '/<sha>/d' /opt/agent-factory/state/failed-tags`
+  puis relancer le timer pour réessayer.
 
 ## 7. Ce que le pipeline ne fait pas
 

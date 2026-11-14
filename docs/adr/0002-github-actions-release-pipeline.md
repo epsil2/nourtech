@@ -28,9 +28,13 @@ Un seul pipeline, `.github/workflows/deploy.yml`, chaîne `dev` → `qualite` �
 2. **Qualité obligatoire** : `qualite` (`needs: dev`) rejoue tests,
    `docker compose config` sur les deux stacks et le scan de secrets ;
    `production` déclare `needs: qualite`.
-3. **Porte humaine** : `workflow_dispatch` avec `confirm=deploy`, environnement
-   `production`, branche `main`, `concurrency` verrouillée.
-4. **Pull deploy vérifié** : le job publie le tag immuable `release/<sha>` ;
+3. **Porte humaine = le tag** : `release.yml` ne se déclenche que sur
+   `push` d'un tag `release/<sha>` ; un merge sur `main` ne peut jamais livrer.
+   Le job vérifie que le sha est un ancêtre de `main` et `concurrency` interdit
+   deux déploiements simultanés. `workflow_dispatch` a été écarté : le jeton
+   disponible n'a pas la permission *Actions* (403), et un tag est une trace
+   d'approbation plus lisible qu'un bouton.
+4. **Pull deploy vérifié** : un humain publie le tag immuable `release/<sha>` ;
    `factory-release-watcher.timer` sur le VPS déploie ce sha (après avoir vérifié
    qu'il est un ancêtre de `main`) avec `scripts/deploy_prod.sh`, et renvoie le
    résultat en statut de commit `factory/production`. Le job attend ce statut :

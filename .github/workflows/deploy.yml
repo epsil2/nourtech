@@ -1,38 +1,27 @@
 name: deploy
 
-# Release chain (SCRUM-21): DEV -> Qualite -> Production.
-#   1. dev        : builds the API image and boots the real DEV stack (Postgres,
-#                   Redis, API) on the runner, then checks /healthz and /readyz.
-#                   An image that cannot serve does not reach quality gates.
-#   2. qualite    : tests, Compose validation of both stacks, secret scan.
-#   3. production : MANUAL (workflow_dispatch with confirm=deploy), main only,
-#                   serialised, in the `production` environment. It streams
-#                   `git archive` to the VPS over a restricted SSH key whose
-#                   forced command only accepts "deploy <40-hex sha>", and the
-#                   VPS runs the same scripts/deploy_prod.sh an operator would.
+# Automatic half of the release chain (SCRUM-21): DEV -> Qualite on every merge
+# to main. Production is a separate, deliberate act: .github/workflows/release.yml
+# only runs when a human publishes a `release/<sha>` tag.
+#
+#   dev     : builds the API image and boots the real DEV stack on the runner
+#             (Postgres, Redis, API), probes /healthz and /readyz, tears it down.
+#   qualite : tests, Compose validation of both stacks, secret scan.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      confirm:
-        description: 'Type "deploy" to release the current main to production'
-        required: true
-        type: string
 
 concurrency:
-  group: production-chain
+  group: deploy-chain
   cancel-in-progress: false
 
 permissions:
   contents: read
 
-env:
-  DEPLOY_HOST: 2.24.51.199
-  DEPLOY_USER: root
-
 jobs:
   dev:
     name: dev
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,7 +39,7 @@ jobs:
         run: |
           set -e
           docker compose exec -T api python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5).read().decode())"
-          docker compose exec -T api python -c "import urllib.request;body=urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=5).read().decode();print(body);assert '\"ok\":true' in body.replace(' ','')"
+          docker compose exec -T api python -c "import urllib.request;body=urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=5).read().decode();print(body);assert '\\"ok\\":true' in body.replace(' ','')"
       - name: arret de la stack DEV
         if: always()
         working-directory: deploy/dev
@@ -59,7 +48,6 @@ jobs:
   qualite:
     name: qualite
     needs: dev
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -84,55 +72,3 @@ jobs:
             exit 1
           fi
           echo "secret scan: ok"
-
-  production:
-    name: production
-    needs: qualite
-    if: github.ref == 'refs/heads/main' && inputs.confirm == 'deploy'
-    runs-on: ubuntu-latest
-    environment:
-      name: production
-    permissions:
-      contents: write # publish the release tag
-      statuses: read # read the deployment result reported by the VPS
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: publier le tag de release
-        run: |
-          set -euo pipefail
-          SHA="$(git rev-parse HEAD)"
-          git tag -f "release/$SHA"
-          git push origin "refs/tags/release/$SHA"
-          echo "release/$SHA published"
-      - name: attendre le deploiement verifie
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          SHA="$(git rev-parse HEAD)"
-          echo "waiting for the VPS to report factory/production on $SHA"
-          end=$((SECONDS + 540))
-          while [ "$SECONDS" -lt "$end" ]; do
-            STATE="$(curl -sS --max-time 20 \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/$GITHUB_REPOSITORY/commits/$SHA/statuses" \
-              | jq -r '[.[] | select(.context == "factory/production")][0].state // "missing"')"
-            echo "status: $STATE"
-            case "$STATE" in
-              success)
-                echo "deployment of $SHA verified by the VPS"
-                echo "verified: /opt/agent-factory/state/last-good holds $SHA on the VPS"
-                exit 0
-                ;;
-              failure|error)
-                echo "::error::deployment of $SHA failed on the VPS ($STATE); the previous release was restored"
-                exit 1
-                ;;
-            esac
-            sleep 20
-          done
-          echo "::error::no deployment status within 9 minutes (VPS watcher: journalctl -u factory-release-watcher)"
-          exit 1

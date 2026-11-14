@@ -4,7 +4,7 @@ Date : 2026-11-14 · Branche : `feature/scrum-21-gitlab-production-pipeline` · 
 
 ## Livré
 
-- `.github/workflows/deploy.yml` — chaîne `dev` → `qualite` → `production` :
+- `.github/workflows/deploy.yml` — moitié automatique, sur merge `main` :
   `dev` construit l'image et démarre la stack DEV réelle sur le runner avec smoke
   `/healthz` + `/readyz` (teardown systématique), `qualite` rejoue tests,
   `docker compose config` dev + prod et le scan de secrets, puis `production` :
