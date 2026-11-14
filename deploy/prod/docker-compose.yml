@@ -94,6 +94,13 @@ services:
       FACTORY_DB_PASSWORD: ${FACTORY_DB_PASSWORD:?FACTORY_DB_PASSWORD must be set in deploy/prod/.env}
       FACTORY_CACHE_HOST: cache
       FACTORY_CACHE_PORT: "6379"
+      # Jira: reads need the three credentials; writes additionally need
+      # JIRA_WRITE_ENABLED=true (default off) and stay inside JIRA_WRITE_PROJECT.
+      JIRA_SITE_URL: ${JIRA_SITE_URL:-}
+      JIRA_ACCOUNT_EMAIL: ${JIRA_ACCOUNT_EMAIL:-}
+      JIRA_API_TOKEN: ${JIRA_API_TOKEN:-}
+      JIRA_WRITE_ENABLED: ${JIRA_WRITE_ENABLED:-false}
+      JIRA_WRITE_PROJECT: ${JIRA_WRITE_PROJECT:-SCRUM}
     depends_on:
       db:
         condition: service_healthy
