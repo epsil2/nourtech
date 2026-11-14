@@ -81,8 +81,14 @@ def test_runner_never_gets_host_access():
 
 def test_watcher_only_deploys_main_and_reports_status():
     text = WATCHER.read_text(encoding="utf-8")
-    assert "release/*" in text
-    assert "SP*-Release" in text  # sprint tags such as SP2-Release are accepted
+    # Tag shapes now live in the resolver: it is the single place that decides what
+    # a release tag looks like, and the shell only deploys what it returns.
+    assert "release_tags.py" in text
+    # Sprint tags such as SP3-Release are accepted, but the shape is asserted where
+    # it is implemented so the test cannot pass on a stale comment.
+    helper = (ROOT / "scripts" / "release_tags.py").read_text(encoding="utf-8")
+    assert "SP[0-9]+-[Rr]elease" in helper
+    assert "release/" in helper
     assert "compare/main..." in text
     assert "deploy_prod.sh" in text
     assert 'FACTORY_IMAGE_TAG="$ORDERED_SHA"' in text

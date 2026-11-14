@@ -80,12 +80,16 @@ jobs:
           end=$((SECONDS + 540))
           while [ "$SECONDS" -lt "$end" ]; do
             STATE="$(curl -sS --max-time 20 \
-              -H "Authorization: Bearer ***" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/$GITHUB_REPOSITORY/commits/$SHA/statuses" \
-              | jq -r '[.[] | select(.context == "factory/production")][0].state // "missing"')"
+              | jq -r 'if type == "array" then ([.[] | select(.context == "factory/production")][0].state // "missing") else "api-error: " + (.message // "unexpected response") end')"
             echo "status: $STATE"
             case "$STATE" in
+              api-error:*|"")
+                echo "::error::could not read commit statuses (${STATE:-empty}); check the token's statuses scope"
+                exit 1
+                ;;
               success)
                 echo "deployment of $SHA verified by the VPS"
                 exit 0
