@@ -39,7 +39,7 @@ jobs:
         run: |
           set -e
           docker compose exec -T api python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5).read().decode())"
-          docker compose exec -T api python -c "import urllib.request;body=urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=5).read().decode();print(body);assert '\\"ok\\":true' in body.replace(' ','')"
+          docker compose exec -T api python -c "import json,urllib.request;d=json.load(urllib.request.urlopen('http://127.0.0.1:8080/readyz',timeout=5));print(d);assert d['status']=='ready', d;assert all(v['ok'] for v in d['dependencies'].values()), d;print('readyz ok')"
       - name: arret de la stack DEV
         if: always()
         working-directory: deploy/dev
