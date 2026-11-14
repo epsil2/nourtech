@@ -41,6 +41,14 @@ CREATE TABLE IF NOT EXISTS audit_events (
     entity_id   text NOT NULL,
     payload     jsonb NOT NULL DEFAULT '{}'::jsonb
 );
+CREATE TABLE IF NOT EXISTS prds (
+    id         uuid PRIMARY KEY,
+    source_key text NULL,
+    payload    jsonb NOT NULL,
+    status     text NOT NULL DEFAULT 'draft',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
 CREATE INDEX IF NOT EXISTS runs_status_idx ON runs (status);
 CREATE INDEX IF NOT EXISTS audit_entity_idx ON audit_events (entity_type, entity_id);
 """
@@ -60,6 +68,7 @@ class MemoryStore:
     def __init__(self) -> None:
         self.agents: dict[str, dict[str, Any]] = {}
         self.runs: dict[str, dict[str, Any]] = {}
+        self.prds: dict[str, dict[str, Any]] = {}
         self.audit: list[dict[str, Any]] = []
 
     def init(self) -> None:
@@ -108,6 +117,34 @@ class MemoryStore:
             return None
         row["status"] = status
         row["updated_at"] = _now()
+        return row
+
+    # prds
+    def create_prd(self, source_key: str | None, payload: dict[str, Any]) -> dict[str, Any]:
+        row = {
+            "id": new_id(),
+            "source_key": source_key,
+            "payload": payload,
+            "status": "draft",
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
+        self.prds[row["id"]] = row
+        return row
+
+    def list_prds(self, limit: int = 50) -> list[dict[str, Any]]:
+        return sorted(self.prds.values(), key=lambda r: r["created_at"], reverse=True)[:limit]
+
+    def get_prd(self, prd_id: str) -> dict[str, Any] | None:
+        return self.prds.get(prd_id)
+
+    def set_prd_status(self, prd_id: str, status: str) -> dict[str, Any] | None:
+        row = self.prds.get(prd_id)
+        if row is None:
+            return None
+        row["status"] = status
+        row["updated_at"] = _now()
+        row["payload"] = {**row["payload"], "status": status}
         return row
 
     # audit
@@ -267,6 +304,50 @@ class PgStore:
                     (limit,),
                 )
             return [_serialise(r) for r in cur.fetchall()]
+
+    # prds
+    def create_prd(self, source_key: str | None, payload: dict[str, Any]) -> dict[str, Any]:
+        import json as _json
+
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prds (id, source_key, payload) VALUES (%s, %s, %s::jsonb) "
+                "RETURNING id, source_key, payload, status, created_at, updated_at",
+                (new_id(), source_key, _json.dumps(payload)),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return _serialise(row)
+
+    def list_prds(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, source_key, payload, status, created_at, updated_at FROM prds "
+                "ORDER BY created_at DESC LIMIT %s",
+                (limit,),
+            )
+            return [_serialise(r) for r in cur.fetchall()]
+
+    def get_prd(self, prd_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, source_key, payload, status, created_at, updated_at FROM prds WHERE id = %s",
+                (prd_id,),
+            )
+            row = cur.fetchone()
+            return _serialise(row) if row else None
+
+    def set_prd_status(self, prd_id: str, status: str) -> dict[str, Any] | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE prds SET status = %s, updated_at = now(), "
+                "payload = jsonb_set(payload, '{status}', to_jsonb(%s::text)) WHERE id = %s "
+                "RETURNING id, source_key, payload, status, created_at, updated_at",
+                (status, status, prd_id),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return _serialise(row) if row else None
 
     def audit_count(self) -> int:
         with self._connect() as conn, conn.cursor() as cur:
