@@ -1,0 +1,42 @@
+name: mirror-to-gitlab
+
+# One-way mirror GitHub -> GitLab (SCRUM-21).
+# GitHub stays the source of truth and the code-review gate; the GitLab project
+# only receives the branches and tags it needs to run the delivery pipeline
+# (qualite -> production). Nothing is ever pushed back from GitLab to GitHub.
+#
+# Requires on this repository:
+#   secret GITLAB_TOKEN  project access token with write_repository (scope: api not needed)
+#   variable GITLAB_PATH owner/project path, e.g. epsil2/nourtech
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mirror-to-gitlab
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Push to GitLab
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          GITLAB_PATH: ${{ vars.GITLAB_PATH }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GITLAB_TOKEN:-}" ] || [ -z "${GITLAB_PATH:-}" ]; then
+            echo "GITLAB_TOKEN secret or GITLAB_PATH variable is missing: mirror skipped" >&2
+            exit 1
+          fi
+          remote="https://oauth2:${GITLAB_TOKEN}@gitlab.com/${GITLAB_PATH}.git"
+          git push --prune --force "$remote" "refs/remotes/origin/*:refs/heads/*" "refs/tags/*:refs/tags/*"

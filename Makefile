@@ -1,7 +1,7 @@
 PY ?= python3
 VENV ?= .venv
 
-.PHONY: venv test compose-check audit dev-up dev-down dev-ps
+.PHONY: venv test compose-check audit dev-up dev-down dev-ps prod-check prod-dry prod-deploy prod-ps prod-logs prod-down prod-smoke
 
 venv:
 	$(PY) -m venv $(VENV)
@@ -24,3 +24,26 @@ dev-ps:
 
 dev-down:
 	cd deploy/dev && docker compose down
+
+.PHONY: prod-check prod-dry prod-deploy prod-ps prod-logs prod-down prod-smoke
+
+prod-check:
+	cd deploy/prod && FACTORY_IMAGE_TAG=check docker compose config --quiet && echo "prod compose valid"
+
+prod-dry:
+	FACTORY_DEPLOY_DRY_RUN=1 FACTORY_IMAGE_TAG=$$(git rev-parse --short HEAD) ./scripts/deploy_prod.sh
+
+prod-deploy:
+	FACTORY_IMAGE_TAG=$$(git rev-parse HEAD) ./scripts/deploy_prod.sh
+
+prod-ps:
+	cd deploy/prod && docker compose ps
+
+prod-logs:
+	cd deploy/prod && docker compose logs --tail 50
+
+prod-down:
+	cd deploy/prod && docker compose down
+
+prod-smoke:
+	curl -fsS http://127.0.0.1:8081/healthz && echo && curl -fsS http://127.0.0.1:8081/readyz && echo
