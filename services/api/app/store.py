@@ -13,6 +13,7 @@ database is safe.
 from __future__ import annotations
 
 import os
+from decimal import Decimal
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -49,6 +50,33 @@ CREATE TABLE IF NOT EXISTS prds (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS plans (
+    id                uuid PRIMARY KEY,
+    issue_key         text NOT NULL,
+    status            text NOT NULL DEFAULT 'draft',
+    payload           jsonb NOT NULL,
+    workflow_id       text NULL,
+    pull_request_url  text NULL,
+    approved_by       text NULL,
+    created_at        timestamptz NOT NULL DEFAULT now(),
+    updated_at        timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS evaluations (
+    id                bigserial PRIMARY KEY,
+    subject           text NOT NULL,
+    dataset           text NOT NULL,
+    score             numeric(5,4) NOT NULL,
+    threshold         numeric(5,4) NOT NULL,
+    passed            boolean NOT NULL,
+    critical_failures jsonb NOT NULL DEFAULT '[]'::jsonb,
+    results           jsonb NOT NULL DEFAULT '[]'::jsonb,
+    review_outcome    text NULL,
+    review_actor      text NULL,
+    review_note       text NOT NULL DEFAULT '',
+    created_at        timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS plans_issue_idx ON plans (issue_key);
+CREATE INDEX IF NOT EXISTS evaluations_subject_idx ON evaluations (subject);
 CREATE TABLE IF NOT EXISTS workflows (
     id           uuid PRIMARY KEY,
     definition   text NOT NULL,
@@ -95,6 +123,8 @@ class MemoryStore:
         self.prds: dict[str, dict[str, Any]] = {}
         self.workflows: dict[str, dict[str, Any]] = {}
         self.checkpoints: list[dict[str, Any]] = []
+        self.plans: dict[str, dict[str, Any]] = {}
+        self.evaluations: list[dict[str, Any]] = []
         self.audit: list[dict[str, Any]] = []
 
     def init(self) -> None:
@@ -172,6 +202,98 @@ class MemoryStore:
         row["updated_at"] = _now()
         row["payload"] = {**row["payload"], "status": status}
         return row
+
+    # plans (SCRUM-27, SCRUM-37, SCRUM-38)
+    def create_plan(self, issue_key: str, payload: dict[str, Any], workflow_id: str | None) -> dict[str, Any]:
+        row = {
+            "id": new_id(),
+            "issue_key": issue_key,
+            "status": "draft",
+            "payload": payload,
+            "workflow_id": workflow_id,
+            "pull_request_url": None,
+            "approved_by": None,
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
+        self.plans[row["id"]] = row
+        return row
+
+    def get_plan(self, plan_id: str) -> dict[str, Any] | None:
+        return self.plans.get(plan_id)
+
+    def list_plans(self, issue_key: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        rows = [p for p in self.plans.values() if issue_key is None or p["issue_key"] == issue_key]
+        return sorted(rows, key=lambda p: p["created_at"], reverse=True)[:limit]
+
+    def set_plan(
+        self,
+        plan_id: str,
+        *,
+        status: str,
+        actor: str | None = None,
+        pull_request_url: str | None = None,
+    ) -> dict[str, Any] | None:
+        row = self.plans.get(plan_id)
+        if row is None:
+            return None
+        row["status"] = status
+        row["updated_at"] = _now()
+        if actor and status == "approved":
+            row["approved_by"] = actor
+        if pull_request_url:
+            row["pull_request_url"] = pull_request_url
+        return row
+
+    # evaluations (SCRUM-28, SCRUM-39)
+    def create_evaluation(
+        self,
+        *,
+        subject: str,
+        dataset: str,
+        score: float,
+        threshold: float,
+        passed: bool,
+        critical_failures: list[str],
+        results: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        row = {
+            "id": len(self.evaluations) + 1,
+            "subject": subject,
+            "dataset": dataset,
+            "score": round(float(score), 4),
+            "threshold": round(float(threshold), 4),
+            "passed": passed,
+            "critical_failures": critical_failures,
+            "results": results,
+            "review_outcome": None,
+            "review_actor": None,
+            "review_note": "",
+            "created_at": _now(),
+        }
+        self.evaluations.append(row)
+        return row
+
+    def get_evaluation(self, evaluation_id: int) -> dict[str, Any] | None:
+        for row in self.evaluations:
+            if row["id"] == evaluation_id:
+                return row
+        return None
+
+    def list_evaluations(self, subject: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        rows = [e for e in self.evaluations if subject is None or e["subject"] == subject]
+        return sorted(rows, key=lambda e: e["id"], reverse=True)[:limit]
+
+    def review_evaluation(self, evaluation_id: int, *, decision: str, actor: str, note: str) -> dict[str, Any] | None:
+        row = self.get_evaluation(evaluation_id)
+        if row is None:
+            return None
+        row.update(review_outcome=decision, review_actor=actor, review_note=note)
+        return row
+
+    def latest_evaluation(self, subject: str) -> dict[str, Any] | None:
+        rows = [e for e in self.evaluations if e["subject"] == subject]
+        return max(rows, key=lambda e: e["id"]) if rows else None
 
     # workflows (SCRUM-23, SCRUM-33)
     def create_workflow(self, definition: str, state: dict[str, Any], nodes: int) -> dict[str, Any]:
@@ -437,6 +559,129 @@ class PgStore:
             conn.commit()
             return _serialise(row) if row else None
 
+    # plans (SCRUM-27, SCRUM-37, SCRUM-38)
+    def create_plan(self, issue_key: str, payload: dict[str, Any], workflow_id: str | None) -> dict[str, Any]:
+        import json as _json
+
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO plans (id, issue_key, payload, workflow_id) VALUES (%s, %s, %s::jsonb, %s) "
+                "RETURNING id, issue_key, status, payload, workflow_id, pull_request_url, approved_by, created_at, updated_at",
+                (new_id(), issue_key, _json.dumps(payload), workflow_id),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return _serialise(row)
+
+    def get_plan(self, plan_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, issue_key, status, payload, workflow_id, pull_request_url, approved_by, created_at, updated_at "
+                "FROM plans WHERE id = %s",
+                (plan_id,),
+            )
+            row = cur.fetchone()
+            return _serialise(row) if row else None
+
+    def list_plans(self, issue_key: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, issue_key, status, payload, workflow_id, pull_request_url, approved_by, created_at, updated_at "
+                "FROM plans WHERE (%s::text IS NULL OR issue_key = %s) ORDER BY created_at DESC LIMIT %s",
+                (issue_key, issue_key, limit),
+            )
+            return [_serialise(r) for r in cur.fetchall()]
+
+    def set_plan(
+        self,
+        plan_id: str,
+        *,
+        status: str,
+        actor: str | None = None,
+        pull_request_url: str | None = None,
+    ) -> dict[str, Any] | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE plans SET status = %s, "
+                "approved_by = coalesce(%s, approved_by), "
+                "pull_request_url = coalesce(%s, pull_request_url), "
+                "updated_at = now() WHERE id = %s "
+                "RETURNING id, issue_key, status, payload, workflow_id, pull_request_url, approved_by, created_at, updated_at",
+                (status, actor if status == "approved" else None, pull_request_url, plan_id),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return _serialise(row) if row else None
+
+    # evaluations (SCRUM-28, SCRUM-39)
+    def create_evaluation(
+        self,
+        *,
+        subject: str,
+        dataset: str,
+        score: float,
+        threshold: float,
+        passed: bool,
+        critical_failures: list[str],
+        results: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        import json as _json
+
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO evaluations (subject, dataset, score, threshold, passed, critical_failures, results) "
+                "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb) "
+                "RETURNING id, subject, dataset, score, threshold, passed, critical_failures, results, "
+                "review_outcome, review_actor, review_note, created_at",
+                (subject, dataset, score, threshold, passed, _json.dumps(critical_failures), _json.dumps(results)),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return _serialise(row)
+
+    def get_evaluation(self, evaluation_id: int) -> dict[str, Any] | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, subject, dataset, score, threshold, passed, critical_failures, results, "
+                "review_outcome, review_actor, review_note, created_at FROM evaluations WHERE id = %s",
+                (evaluation_id,),
+            )
+            row = cur.fetchone()
+            return _serialise(row) if row else None
+
+    def list_evaluations(self, subject: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, subject, dataset, score, threshold, passed, critical_failures, results, "
+                "review_outcome, review_actor, review_note, created_at FROM evaluations "
+                "WHERE (%s::text IS NULL OR subject = %s::text) ORDER BY id DESC LIMIT %s",
+                (subject, subject, limit),
+            )
+            return [_serialise(r) for r in cur.fetchall()]
+
+    def review_evaluation(self, evaluation_id: int, *, decision: str, actor: str, note: str) -> dict[str, Any] | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE evaluations SET review_outcome = %s, review_actor = %s, review_note = %s WHERE id = %s "
+                "RETURNING id, subject, dataset, score, threshold, passed, critical_failures, results, "
+                "review_outcome, review_actor, review_note, created_at",
+                (decision, actor, note, evaluation_id),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return _serialise(row) if row else None
+
+    def latest_evaluation(self, subject: str) -> dict[str, Any] | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, subject, dataset, score, threshold, passed, critical_failures, results, "
+                "review_outcome, review_actor, review_note, created_at FROM evaluations "
+                "WHERE subject = %s::text ORDER BY id DESC LIMIT 1",
+                (subject,),
+            )
+            row = cur.fetchone()
+            return _serialise(row) if row else None
+
     # workflows (SCRUM-23, SCRUM-33)
     def create_workflow(self, definition: str, state: dict[str, Any], nodes: int) -> dict[str, Any]:
         import json as _json
@@ -542,7 +787,12 @@ class PgStore:
 def _serialise(row: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in row.items():
-        out[key] = value.isoformat() if isinstance(value, datetime) else value
+        if isinstance(value, datetime):
+            out[key] = value.isoformat()
+        elif isinstance(value, Decimal):
+            out[key] = float(value)
+        else:
+            out[key] = value
     return out
 
 

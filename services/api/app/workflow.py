@@ -44,7 +44,7 @@ def _now() -> str:
 @dataclass(frozen=True)
 class Node:
     name: str
-    run: Callable[[dict[str, Any]], dict[str, Any]]
+    run: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
     approval: bool = False
     label: str = ""
 
@@ -52,7 +52,7 @@ class Node:
 # --- discovery -------------------------------------------------------------
 
 
-def _intake(state: dict[str, Any]) -> dict[str, Any]:
+def _intake(state: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     request = str(state.get("request", "")).strip()
     if not request:
         raise WorkflowDefinitionError("the discovery workflow needs a 'request'")
@@ -65,7 +65,7 @@ def _intake(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _prd_draft(state: dict[str, Any]) -> dict[str, Any]:
+def _prd_draft(state: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     request = state["intake"]["request"]
     try:
         document = prd_module.generate(request, state["intake"].get("source_key"))
@@ -74,7 +74,7 @@ def _prd_draft(state: dict[str, Any]) -> dict[str, Any]:
     return {"prd": document, "prd_markdown": prd_module.render_markdown(document)}
 
 
-def _architecture_review(state: dict[str, Any]) -> dict[str, Any]:
+def _architecture_review(state: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     # The review itself is the human decision recorded by the approval: the node
     # only states what has to be reviewed, so the checkpoint diff stays readable.
     return {
@@ -86,7 +86,7 @@ def _architecture_review(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _backlog_plan(state: dict[str, Any]) -> dict[str, Any]:
+def _backlog_plan(state: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     criteria = state["prd"]["sections"].get("critères_d_acceptation", [])
     items = [
         {"index": i + 1, "acceptance": text, "status": "planned"}
@@ -98,37 +98,72 @@ def _backlog_plan(state: dict[str, Any]) -> dict[str, Any]:
 # --- delivery --------------------------------------------------------------
 
 
-def _plan(state: dict[str, Any]) -> dict[str, Any]:
+def _plan(state: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     items = state.get("backlog", {}).get("items") or []
     if not items:
         raise WorkflowDefinitionError("the delivery workflow needs a backlog")
     return {"plan": {"items": [{**item, "status": "in-progress"} for item in items]}}
 
 
-def _implement(state: dict[str, Any]) -> dict[str, Any]:
+def _implement(state: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     items = [{**item, "status": "implemented"} for item in state["plan"]["items"]]
     return {"plan": {**state["plan"], "items": items, "implemented_at": _now()}}
 
 
-def _qa(state: dict[str, Any]) -> dict[str, Any]:
+def _quality(state: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """Quality is evidence, not an assertion (SCRUM-28, SCRUM-39).
+
+    The checks are the backlog items *and* the recorded evaluation of this
+    workflow: a run with no evaluation, or with a failing one, is not a passing
+    quality gate — that is the whole point of the gate.
+    """
     items = state["plan"]["items"]
     checks = [
         {"index": item["index"], "acceptance": item["acceptance"], "passed": True}
         for item in items
     ]
-    return {
-        "qa": {
-            "checks": checks,
-            "passed": all(check["passed"] for check in checks),
-            "checked_at": _now(),
+    evaluation = ctx["store"].latest_evaluation(ctx["workflow_id"])
+    evaluation_passed = bool(evaluation and evaluation["passed"])
+    checks.append(
+        {
+            "index": 0,
+            "acceptance": "evaluation enregistrée et réussie",
+            "passed": evaluation_passed,
+            "evaluation_id": evaluation["id"] if evaluation else None,
+            "score": evaluation["score"] if evaluation else None,
         }
+    )
+    return {
+        "checks": checks,
+        "evaluation_id": evaluation["id"] if evaluation else None,
+        "evaluation_score": evaluation["score"] if evaluation else None,
+        "passed": evaluation_passed and all(check["passed"] for check in checks),
+        "checked_at": _now(),
     }
 
 
-def _release_ready(state: dict[str, Any]) -> dict[str, Any]:
-    if not state["qa"]["passed"]:
-        raise WorkflowStateError("quality checks did not pass")
-    return {"release": {"ready": True, "prepared_at": _now(), "items": len(state["qa"]["checks"])}}
+def _qa(state: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    return {"qa": _quality(state, ctx)}
+
+
+def _release_ready(state: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    # Re-read the evidence at the gate instead of trusting the snapshot taken by
+    # the qa node: a gate that was blocked because the proof was missing has to
+    # reopen once the proof exists, without restarting the workflow.
+    quality = _quality(state, ctx)
+    if not quality["passed"]:
+        evaluation_id = quality.get("evaluation_id")
+        reason = (
+            f"quality gate failed: evaluation {evaluation_id} scored "
+            f"{quality.get('evaluation_score')} below threshold"
+            if evaluation_id
+            else "quality gate failed: no evaluation recorded for this workflow"
+        )
+        raise WorkflowStateError(reason)
+    return {
+        "qa": quality,
+        "release": {"ready": True, "prepared_at": _now(), "items": len(quality["checks"])},
+    }
 
 
 DEFINITIONS: dict[str, list[Node]] = {
@@ -211,7 +246,7 @@ def advance(
             )
             return {**updated, "waiting_for": node.name}
 
-        state = {**state, **node.run(state)}
+        state = {**state, **node.run(state, {"store": store, "workflow_id": str(workflow["id"]), "actor": actor})}
         store.add_checkpoint(
             workflow["id"],
             step=node.name,
