@@ -40,20 +40,28 @@ L'API doit tourner sur `127.0.0.1:8081` (prod AI Factory) ou être pointée par 
 ## Vérification locale dans Docker (loopback seulement)
 
 ```bash
-CAMILIA_AUTH='soufiane:$$apr1$$…' docker compose -f compose.yaml -f compose.dev.yaml up -d --build
-curl -s http://127.0.0.1:8090/healthz-static        # ok
-python3 scripts/smoke_camilia.py http://127.0.0.1:8090
+# htpasswd de test
+printf 'soufiane:%s\n' "$(openssl passwd -apr1 devonly)" > /tmp/htpasswd-dev
+chgrp 101 /tmp/htpasswd-dev && chmod 640 /tmp/htpasswd-dev   # gid 101 = nginx dans l'image
+
+CAMILIA_HTPASSWD=/tmp/htpasswd-dev docker compose -f compose.yaml -f compose.dev.yaml up -d --build
+python3 scripts/smoke_camilia.py http://127.0.0.1:8090 soufiane:devonly
 ```
 
 ## Déploiement (nécessite un accord explicite)
 
 ```bash
-# /opt/camilia/.env — jamais dans le dépôt
-CAMILIA_AUTH='soufiane:$apr1$…'   # htpasswd -nbB soufiane 'mot-de-passe'
-docker compose up -d --build
+# 1. identifiants : jamais dans le dépôt, jamais dans l'image
+printf 'soufiane:%s\n' "$(openssl passwd -apr1 'mot-de-passe')" > /opt/camilia/htpasswd
+chgrp 101 /opt/camilia/htpasswd && chmod 640 /opt/camilia/htpasswd
+
+# 2. stack
+cd dashboard && docker compose up -d --build
 ```
 
-Traefik prend la route par labels : certificat Let's Encrypt automatique, aucune modification de sa configuration.
+Le fichier htpasswd est monté en lecture seule dans nginx (`auth_basic`). Il doit être lisible par
+l'utilisateur nginx de l'image (uid/gid 101) — sinon nginx répond 500. Traefik prend la route par
+labels : certificat Let's Encrypt automatique, aucune modification de sa configuration.
 
 ## Structure
 
@@ -62,6 +70,6 @@ src/lib/api.ts        types et client de l'API réelle
 src/pages/Overview.tsx  vue d'ensemble (données live)
 src/components/       shell, KPI, panneaux
 compose.yaml          stack isolée + labels Traefik
-nginx.conf            bundle statique + proxy /api
+nginx.conf            bundle statique + proxy /api + basic auth
 scripts/smoke_camilia.py  vérification sans dépendance
 ```

@@ -14,6 +14,9 @@ services:
       # the AI Factory API only binds 127.0.0.1 on the host, so we join its network
       # and talk to it by service name. No port is published, nothing else is shared.
       - api_net
+    volumes:
+      # credentials live on the host, never in the image, the labels or the repository
+      - ${CAMILIA_HTPASSWD:-/opt/camilia/htpasswd}:/etc/nginx/camilia.htpasswd:ro
     labels:
       traefik.enable: "true"
       traefik.docker.network: camilia_internal
@@ -22,9 +25,6 @@ services:
       traefik.http.routers.camilia.tls: "true"
       traefik.http.routers.camilia.tls.certresolver: letsencrypt
       traefik.http.routers.camilia.service: camilia
-      # private dashboard: basic auth in front of it, credentials out of the repo
-      traefik.http.routers.camilia.middlewares: camilia-auth@docker
-      traefik.http.middlewares.camilia-auth.basicauth.users: ${CAMILIA_AUTH:?CAMILIA_AUTH is required}
       traefik.http.services.camilia.loadbalancer.server.port: "80"
     logging:
       driver: json-file
