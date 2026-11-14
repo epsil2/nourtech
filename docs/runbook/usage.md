@@ -105,9 +105,13 @@ GET /api/v1/integrations/jira/issues    # stories/tâches du projet, filtrables
 GET /api/v1/integrations/jira/schema    # types et transitions disponibles
 ```
 
-## Écarts connus au 2026-11-14
+## Écarts connus au 2026-11-14 (mis à jour après déploiement)
 
-- L'instance `agent-factory-prod` (image `e802dce`, 127.0.0.1:8081) est **antérieure** aux modules
-  release et observabilité : `/api/v1/releases*`, `/api/v1/artifacts*`, `/api/v1/observability/*`
-  y répondent 404. Redéploiement nécessaire pour servir les 43 routes.
+- Prod redéployée en `41bcc13` : les **43 routes** sont servies sur `127.0.0.1:8081`
+  (`/healthz` et `/readyz` verts, base migrée à 11 tables).
+- Intégration Jira **non configurée** en prod (`configured:false`) : les routes
+  `/api/v1/integrations/jira/*` répondent mais sans backlog réel.
+- Chaîne release volontairement fermée : sans artefact construit par le workflow CI `ci`,
+  `readiness` et `plan` répondent 404.
 - Aucune exposition publique (bind 127.0.0.1) : accès par SSH ou tunnel.
+- Premier cas d'usage métier pas à pas : `docs/runbook/premier-cas-usage.md`.
