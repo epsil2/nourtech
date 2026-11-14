@@ -16,6 +16,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STACK_DIR="$ROOT/deploy/prod"
 COMPOSE_FILE="$STACK_DIR/docker-compose.yml"
 ENV_FILE="$STACK_DIR/.env"
+# Optional secrets store kept OUTSIDE the repo: the tree must stay credential-free
+# (tests/test_deploy_pipeline.py scans it), so integration tokens live here.
+SECRETS_FILE="${FACTORY_SECRETS_FILE:-/opt/agent-factory/secrets/jira.env}"
 STATE_DIR="${FACTORY_STATE_DIR:-/opt/agent-factory/state}"
 BACKUP_DIR="${FACTORY_BACKUP_DIR:-/opt/agent-factory/backups}"
 HEALTH_URL="http://127.0.0.1:8081"
@@ -26,7 +29,13 @@ DRY_RUN="${FACTORY_DEPLOY_DRY_RUN:-0}"
 log()  { printf '[deploy] %s\n' "$*"; }
 fail() { printf '[deploy] ERROR: %s\n' "$*" >&2; exit 1; }
 
-compose() { docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"; }
+compose() {
+  if [ -f "$SECRETS_FILE" ]; then
+    docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" --env-file "$SECRETS_FILE" "$@"
+  else
+    docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
+  fi
+}
 
 # --- 0. inputs -------------------------------------------------------------
 TAG="${FACTORY_IMAGE_TAG:-}"
