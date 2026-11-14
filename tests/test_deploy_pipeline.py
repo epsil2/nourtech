@@ -36,6 +36,8 @@ def test_dev_stage_runs_on_merge_and_boots_the_real_stack():
     assert "docker build" in dev
     assert "docker compose up -d --wait" in dev
     assert "/healthz" in dev and "/readyz" in dev
+    # the probe asserts the real contract served by services/api/app/main.py
+    assert "d['status']=='ready'" in dev
     assert "docker compose down -v" in dev
     assert "if: always()" in dev  # teardown even when the smoke test fails
 
