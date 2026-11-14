@@ -46,41 +46,58 @@ post_status() { # sha state description
     >/dev/null 2>&1 || log "warning: could not post status $2 on $1"
 }
 
-# Tags present remotely
-TAGS="$(git ls-remote --tags --refs "https://github.com/$REPO.git" 'refs/tags/release/*' 2>/dev/null \
-  | awk '{print $2}' | sed 's#refs/tags/release/##' | grep -E '^[0-9a-f]{40}$' | sort -u || true)"
-[ -n "$TAGS" ] || exit 0
+# Tags present remotely. Two accepted shapes:
+#   release/<sha>    machine tag published by .github/workflows/release.yml
+#   SP<n>-Release    human sprint release tag, e.g. SP2-Release
+# Annotated tags are dereferenced so the commit -- never the tag object -- is what
+# gets validated against main and deployed.
+TAGMAP="$(git ls-remote --tags "https://github.com/$REPO.git" \
+  'refs/tags/release/*' 'refs/tags/SP*-Release' 2>/dev/null | awk '
+{
+  sha = $1; ref = $2; sub(/^refs\/tags\//, "", ref);
+  if (ref ~ /\^\{\}$/) { sub(/\^\{\}$/, "", ref); deref[ref] = sha }
+  else { plain[ref] = sha }
+  if (!(ref in seen)) { seen[ref] = 1; order[++n] = ref }
+}
+END { for (i = 1; i <= n; i++) { t = order[i]; s = (t in deref) ? deref[t] : plain[t]; if (s != "") print t " " s } }')"
+[ -n "$TAGMAP" ] || exit 0
 
 touch "$STATE/deployed-tags" "$STATE/failed-tags" "$STATE/pending-tags"
 
-# Newest candidate: tag not yet deployed and not recorded as failed
+# Candidates: recognised tag shape, 40-hex commit, not already done
 CANDIDATES=""
-for sha in $TAGS; do
+while read -r tag sha; do
+  [ -n "${sha:-}" ] || continue
+  printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$' || continue
+  printf '%s' "$tag" | grep -Eq '^(release/.+|SP[0-9]+-[Rr]elease)$' || continue
   grep -qx "$sha" "$STATE/deployed-tags" && continue
   grep -qx "$sha" "$STATE/failed-tags" && continue
-  CANDIDATES="$CANDIDATES $sha"
-done
+  CANDIDATES="$CANDIDATES$sha|$tag\n"
+done <<<"$TAGMAP"
 [ -n "${CANDIDATES// /}" ] || exit 0
 
 # Order by commit date, newest first
 ordered=""
-for sha in $CANDIDATES; do
+while IFS='|' read -r sha tag; do
+  [ -n "${sha:-}" ] || continue
   date_utc="$(api "https://api.github.com/repos/$REPO/commits/$sha" | sed -n 's/.*"date": "\([^"]*\)".*/\1/p' | tail -1)"
-  ordered="$ordered${date_utc:-0000}|$sha\n"
-done
-ORDERED_SHA="$(printf "%b" "$ordered" | sort -r | head -1 | cut -d'|' -f2)"
+  ordered="$ordered${date_utc:-0000}|$sha|$tag\n"
+done <<<"$(printf '%b' "$CANDIDATES")"
+BEST="$(printf '%b' "$ordered" | sort -r | head -1)"
+ORDERED_SHA="$(printf '%s' "$BEST" | cut -d'|' -f2)"
+RELEASE_TAG="$(printf '%s' "$BEST" | cut -d'|' -f3)"
 [ -n "$ORDERED_SHA" ] || exit 0
 
 # The tag must point at a commit already on main (never deploy a side branch)
 CMP="$(api "https://api.github.com/repos/$REPO/compare/main...$ORDERED_SHA" | sed -n 's/.*"status": "\([a-z]*\)".*/\1/p' | head -1)"
 if [ "$CMP" != "behind" ] && [ "$CMP" != "identical" ]; then
-  log "refused $ORDERED_SHA: not on main (compare status=${CMP:-unknown})"
+  log "refused $ORDERED_SHA ($RELEASE_TAG): not on main (compare status=${CMP:-unknown})"
   post_status "$ORDERED_SHA" "error" "commit is not on main"
   echo "$ORDERED_SHA" >>"$STATE/failed-tags"
   exit 0
 fi
 
-log "releasing $ORDERED_SHA"
+log "releasing $RELEASE_TAG ($ORDERED_SHA)"
 post_status "$ORDERED_SHA" "pending" "deploying on the VPS"
 
 stage="$(mktemp -d /opt/agent-factory/staging.XXXXXX)"
@@ -110,7 +127,7 @@ chmod +x "$APP/scripts/deploy_prod.sh"
 if ( cd "$APP" && FACTORY_IMAGE_TAG="$ORDERED_SHA" ./scripts/deploy_prod.sh >>"$LOG" 2>&1 ); then
   echo "$ORDERED_SHA" >>"$STATE/deployed-tags"
   log "released $ORDERED_SHA"
-  post_status "$ORDERED_SHA" "success" "deployed and healthy on the VPS"
+  post_status "$ORDERED_SHA" "success" "deployed and healthy on the VPS ($RELEASE_TAG)"
 else
   log "failed: deploy_prod.sh returned non-zero for $ORDERED_SHA (rollback may have run)"
   post_status "$ORDERED_SHA" "failure" "deploy_prod.sh failed, previous release restored"

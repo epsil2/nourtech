@@ -1,18 +1,23 @@
-"""Factory API foundation: liveness and readiness only (scope of SCRUM-19).
+"""AI Agent Factory API.
 
-Business endpoints, persistence models and auth belong to SCRUM-22. This module
-exists so the isolated DEV stack has a real readiness signal to test.
+SCRUM-19 established the liveness/readiness contract that the DEV, Qualité and
+Production stages probe. SCRUM-22 adds the isolated PostgreSQL foundation,
+SCRUM-32 the agents/runs API, SCRUM-31 the audit trail and SCRUM-41 the run
+status tracking. Business routers live in ``api.py``; this module owns the app
+lifecycle and the readiness contract.
 """
 from __future__ import annotations
 
 import os
 import socket
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-app = FastAPI(title="AI Agent Factory API", version="0.1.0", docs_url=None, redoc_url=None)
+from .api import router
+from .store import build_store
 
 
 def _tcp_check(host: str, port: int, timeout: float = 2.0) -> bool:
@@ -32,6 +37,25 @@ def _dependencies() -> dict[str, dict[str, Any]]:
         "database": {"host": db_host, "port": db_port, "ok": _tcp_check(db_host, db_port)},
         "cache": {"host": cache_host, "port": cache_port, "ok": _tcp_check(cache_host, cache_port)},
     }
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    store = build_store()
+    store.init()
+    app.state.store = store
+    yield
+    store.close()
+
+
+app = FastAPI(
+    title="AI Agent Factory API",
+    version="0.2.0",
+    docs_url=None,
+    redoc_url=None,
+    lifespan=lifespan,
+)
+app.include_router(router)
 
 
 @app.get("/healthz")
