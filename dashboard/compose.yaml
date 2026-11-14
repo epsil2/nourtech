@@ -1,0 +1,44 @@
+# Camilia — isolated stack. Nothing is shared with the other services on this VPS
+# except the existing Traefik (routing by labels) and the AI Factory API port.
+name: camilia
+
+services:
+  web:
+    build:
+      context: .
+    image: camilia-web:${CAMILIA_TAG:-local}
+    container_name: camilia-web
+    restart: unless-stopped
+    networks:
+      - camilia_internal
+      # the AI Factory API only binds 127.0.0.1 on the host, so we join its network
+      # and talk to it by service name. No port is published, nothing else is shared.
+      - api_net
+    volumes:
+      # credentials live on the host, never in the image, the labels or the repository
+      - ${CAMILIA_HTPASSWD:-/opt/camilia/htpasswd}:/etc/nginx/camilia.htpasswd:ro
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: camilia_internal
+      traefik.http.routers.camilia.entrypoints: websecure
+      traefik.http.routers.camilia.rule: Host(`camilia.nourredine.tech`)
+      traefik.http.routers.camilia.tls: "true"
+      traefik.http.routers.camilia.tls.certresolver: letsencrypt
+      traefik.http.routers.camilia.service: camilia
+      traefik.http.services.camilia.loadbalancer.server.port: "80"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+networks:
+  camilia_internal:
+    name: camilia_internal
+  api_net:
+    external: true
+    name: agent-factory-prod-internal

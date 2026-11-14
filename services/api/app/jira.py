@@ -144,6 +144,14 @@ class JiraClient:
             )
         return out
 
+    def transitions(self, key: str) -> list[dict[str, Any]]:
+        """Workflow transitions available on one issue (read-only lookup)."""
+        body = self._get(f"/rest/api/3/issue/{urllib.parse.quote(key)}/transitions")
+        return [
+            {"id": t.get("id"), "name": t.get("name"), "to": (t.get("to") or {}).get("name")}
+            for t in body.get("transitions", []) or []
+        ]
+
     def fields(self, limit: int = 200) -> list[dict[str, Any]]:
         body = self._get("/rest/api/3/field")
         return [

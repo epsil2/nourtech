@@ -48,6 +48,14 @@ prod-down:
 prod-smoke:
 	curl -fsS http://127.0.0.1:8081/healthz && echo && curl -fsS http://127.0.0.1:8081/readyz && echo
 
+# Smoke de bout en bout de la prod : 13 verifications en lecture seule
+smoke:
+	python3 scripts/smoke_prod.py
+
+# Ajoute les ecritures Jira (ticket technique idempotent, remis a "To Do")
+smoke-write:
+	python3 scripts/smoke_prod.py --write
+
 # Validation locale du pipeline de release (mêmes gates que le job qualite)
 pipeline-check:
 	$(VENV)/bin/python -m pytest -q tests/test_deploy_pipeline.py tests/test_prod_policy.py

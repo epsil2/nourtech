@@ -98,8 +98,23 @@ def decide(
     current = _get(store, workflow_id)
     actor = (x_actor or "anonymous")[:120]
     try:
-        return engine.decide(
+        result = engine.decide(
             store, current, decision=body.decision, actor=actor, note=redact(body.note)
         )
     except engine.WorkflowStateError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # A chained stage that just completed starts the next one. The decision itself
+    # is already recorded: a failure here must never turn an accepted decision into
+    # an error, so it is audited and reported instead of raised.
+    from . import chain as chainer
+
+    try:
+        chained = chainer.on_decision(store, result, decision=body.decision, actor=actor)
+    except Exception as exc:  # noqa: BLE001 — the cascade must not swallow the decision
+        chained = {"action": "failed", "reason": str(exc)[:200]}
+        store.add_audit(actor, "chain.failed", "workflow", workflow_id,
+                        {"reason": redact({"reason": str(exc)[:200]})})
+    if chained:
+        result = {**result, "chain": chained}
+    return result

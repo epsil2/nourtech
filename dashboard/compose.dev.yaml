@@ -1,0 +1,9 @@
+# Local verification overlay: loopback only, no Traefik, no auth.
+# docker compose -f compose.yaml -f compose.dev.yaml up -d --build
+services:
+  web:
+    container_name: camilia-web-dev
+    ports:
+      - "127.0.0.1:8090:80"
+    labels:
+      traefik.enable: "false"
