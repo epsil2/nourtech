@@ -162,3 +162,40 @@ def test_roles_are_enforced_server_side(client, app_module):
         assert other.get("/api/v1/projects").status_code == 200
         # but may not manage users
         assert other.get("/api/v1/auth/users").status_code == 403
+
+
+# --------------------------------------------------------------------------- #
+# Project Factory is closed too
+# --------------------------------------------------------------------------- #
+def test_factory_is_closed_without_a_session(client):
+    assert client.get("/api/v1/factory/projects").status_code == 401
+    assert client.get("/api/v1/factory/catalogue").status_code == 401
+    assert client.post("/api/v1/factory/projects", json={"key": "NOPE1", "name": "x"}).status_code == 401
+    assert client.post("/api/v1/factory/projects/abc/provision").status_code == 401
+
+
+def test_viewer_cannot_provision_but_can_read(client, app_module):
+    with TestClient(app_module.app) as other:
+        from app.security import create_user as mk_user
+
+        mk_user(other.app.state.store, "auditor", "auditor-pass", role="viewer")
+        assert login(other, "auditor", "auditor-pass").status_code == 200
+        assert other.get("/api/v1/factory/projects").status_code == 200
+        refused = other.post(
+            "/api/v1/factory/projects",
+            json={"key": "VW01", "name": "viewer attempt", "template": "fastapi-api"},
+        )
+        assert refused.status_code == 403
+
+
+def test_factory_actor_is_the_session_identity(client, app_module):
+    assert login(client).status_code == 200
+    created = client.post(
+        "/api/v1/factory/projects",
+        json={"key": "ACTOR1", "name": "Actor probe", "template": "fastapi-api"},
+        headers={"x-actor": "root"},
+    )
+    assert created.status_code == 201, created.text
+    project_id = created.json()["project"]["project"]["id"]
+    rows = client.get(f"/api/v1/factory/projects/{project_id}/audit").json()["items"]
+    assert rows and all(row["actor"] == "soufiane" for row in rows)
