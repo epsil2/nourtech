@@ -137,12 +137,11 @@ def test_template_documents_a_health_contract(
     documented = any("/health" in body for body in files.values())
     implemented = any('"/health"' in body or "'/health'" in body for body in python_bodies)
     assert documented, f"{key} never mentions /health"
-    if key != "python-agent":
-        assert implemented, f"{key} has no health endpoint"
-        endpoint = next(
-            body for body in python_bodies if '"/health"' in body or "'/health'" in body
-        )
-        assert '"ok"' in endpoint or "'ok'" in endpoint
+    assert implemented, f"{key} has no health endpoint"
+    endpoint = next(
+        body for body in python_bodies if '"/health"' in body or "'/health'" in body
+    )
+    assert '"ok"' in endpoint or "'ok'" in endpoint
 
 
 @pytest.mark.parametrize("key", EXPECTED_KEYS)

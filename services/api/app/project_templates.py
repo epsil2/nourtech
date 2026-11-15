@@ -1049,10 +1049,16 @@ def _python_agent_files() -> dict[str, str]:
 
             ## Health
 
-            A batch job has no long-running process to probe, so this template ships no
-            HTTP `/health` endpoint. Liveness is the container exit code (0 when the plan
-            finished or the budget was reached) plus the JSON summary printed on stdout;
-            wire the platform's job monitor to those two signals.
+            Two signals, for two different questions:
+
+            - **Did the run succeed?** The container exit code (0 when the plan finished or
+              the budget was reached) plus the JSON summary printed on stdout. This is the
+              signal to alert on, and the only one that says anything about the work.
+            - **Is the supervision wrapper alive?** `python -m agent.health` serves
+              `GET /health` -> `{"status": "ok", "service": "...", "max_steps": N}` on
+              `AGENT_HEALTH_PORT` (default 8080), for orchestrators that require a /health
+              contract before routing traffic or accepting a job. It reports the wrapper,
+              never the outcome of a run.
             '''
         ),
         ".gitignore": _gitignore_python(),
@@ -1067,6 +1073,8 @@ def _python_agent_files() -> dict[str, str]:
             AGENT_MAX_STEPS=
             # Log level for the agent (debug | info | warning | error).
             LOG_LEVEL=
+            # Port served by `python -m agent.health` (empty = 8080, probe disabled unless started).
+            AGENT_HEALTH_PORT=
             '''
         ),
         "requirements.txt": _text(
@@ -1132,6 +1140,109 @@ def _python_agent_files() -> dict[str, str]:
                         goal=os.getenv("AGENT_GOAL", "summarise the open backlog").strip(),
                         max_steps=_positive_int("AGENT_MAX_STEPS", DEFAULT_MAX_STEPS),
                     )
+            '''
+        ),
+        "agent/health.py": _text(
+            '''
+            """Opt-in HTTP health probe for orchestration that requires a /health contract.
+
+            A batch run has no long-running process to probe, so this probe is a separate,
+            explicit mode: start ``python -m agent.health`` next to the job (supervisor,
+            sidecar, or compose ``depends_on``) and point the platform at AGENT_HEALTH_PORT.
+            It reports liveness of the supervision wrapper, never the outcome of a run.
+            """
+
+            from __future__ import annotations
+
+            import json
+            import os
+            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+            from agent.config import AgentConfig
+
+            SERVICE = "{{project_slug}}"
+
+
+            class _HealthHandler(BaseHTTPRequestHandler):
+                """Answers GET /health with a small JSON document; 404 for anything else."""
+
+                def do_GET(self) -> None:  # noqa: N802 - name fixed by BaseHTTPRequestHandler
+                    if self.path.split("?")[0] != "/health":
+                        self.send_error(404, "not found")
+                        return
+                    config = AgentConfig.from_env()
+                    body = json.dumps(
+                        {"status": "ok", "service": SERVICE, "max_steps": config.max_steps}
+                    ).encode()
+                    self.send_response(200)
+                    self.send_header("content-type", "application/json")
+                    self.send_header("content-length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+                def log_message(self, fmt: str, *args: object) -> None:
+                    """Silence per-request logging: probes would spam the job output."""
+
+
+            def serve(port: int | None = None) -> None:
+                """Serve the probe on AGENT_HEALTH_PORT (default 8080) until interrupted."""
+                resolved = port if port is not None else int(os.getenv("AGENT_HEALTH_PORT", "8080"))
+                server = ThreadingHTTPServer(("0.0.0.0", resolved), _HealthHandler)
+                try:
+                    server.serve_forever()
+                finally:
+                    server.server_close()
+
+
+            if __name__ == "__main__":
+                serve()
+            '''
+        ),
+        "tests/test_health.py": _text(
+            '''
+            """The opt-in probe answers /health and nothing else."""
+
+            from __future__ import annotations
+
+            import json
+            import threading
+            import urllib.error
+            import urllib.request
+            from http.server import ThreadingHTTPServer
+
+            from agent.health import _HealthHandler
+
+
+            def _serve_ephemeral():
+                server = ThreadingHTTPServer(("127.0.0.1", 0), _HealthHandler)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                return server, server.server_address[1]
+
+
+            def test_health_reports_ok() -> None:
+                server, port = _serve_ephemeral()
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=5) as response:
+                        assert response.status == 200
+                        body = json.loads(response.read())
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                assert body["status"] == "ok"
+                assert body["service"] == "{{project_slug}}"
+
+
+            def test_unknown_path_is_not_healthy() -> None:
+                server, port = _serve_ephemeral()
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{port}/ready", timeout=5):
+                        raise AssertionError("expected a 404")
+                except urllib.error.HTTPError as error:
+                    assert error.code == 404
+                finally:
+                    server.shutdown()
+                    server.server_close()
             '''
         ),
         "agent/main.py": _text(
