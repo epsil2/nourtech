@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 import { Sidebar, NAV } from "./components/Sidebar";
 import type { PageKey } from "./components/Sidebar";
 import { Agents } from "./pages/Agents";
+import { Deployments } from "./pages/Deployments";
+import { Executions } from "./pages/Executions";
+import { Projects } from "./pages/Projects";
 import { Backlog } from "./pages/Backlog";
 import { GitHub } from "./pages/GitHub";
 import { Integrations } from "./pages/Integrations";
@@ -54,11 +57,14 @@ export default function App() {
       <Sidebar current={page} onNavigate={go} apiOk={health.ok} apiLabel={health.label} />
       <main>
         {page === "overview" && <Overview onNewAgent={() => go("agents")} />}
+        {page === "projects" && <Projects />}
         {page === "agents" && <Agents />}
         {page === "backlog" && <Backlog />}
         {page === "sprints" && <Sprints />}
         {page === "github" && <GitHub />}
+        {page === "executions" && <Executions />}
         {page === "releases" && <Releases />}
+        {page === "deployments" && <Deployments />}
         {page === "monitoring" && <Monitoring />}
         {page === "settings" && <Integrations />}
         {!meta && <Soon title="Introuvable" sprint="" body="Cette page n'existe pas." />}

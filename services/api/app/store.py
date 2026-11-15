@@ -18,6 +18,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from .cp_store import CP_SCHEMA, ControlPlaneMixin
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agents (
     id          uuid PRIMARY KEY,
@@ -156,7 +158,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-class MemoryStore:
+class MemoryStore(ControlPlaneMixin):
     """Non-persistent store: tests and local smoke runs only."""
 
     def __init__(self) -> None:
@@ -525,7 +527,7 @@ class MemoryStore:
         return row
 
 
-class PgStore:
+class PgStore(ControlPlaneMixin):
     """PostgreSQL store. One short-lived connection per operation."""
 
     def __init__(self, dsn: str) -> None:
@@ -544,6 +546,7 @@ class PgStore:
     def init(self) -> None:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(SCHEMA)
+            cur.execute(CP_SCHEMA)
             conn.commit()
 
     def close(self) -> None:
