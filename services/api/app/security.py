@@ -29,6 +29,11 @@ from typing import Any, Iterable
 from fastapi import HTTPException, Request
 
 ROLES = ("admin", "operator", "viewer")
+
+# Minimum password length, applied at hashing time and mirrored by the API schemas
+# (api_auth imports it) so the two can never drift apart. Six is the operator's
+# explicit choice of policy floor for this single-tenant deployment.
+MIN_PASSWORD_LENGTH = 6
 DEFAULT_ROLE = "viewer"
 
 SESSION_COOKIE = "cam_session"
@@ -70,8 +75,8 @@ def bootstrap_credentials() -> tuple[str, str, str] | None:
 # password hashing
 # --------------------------------------------------------------------------- #
 def hash_password(password: str, *, rounds: int = PBKDF2_ROUNDS) -> str:
-    if not password or len(password) < 8:
-        raise ValueError("password must be at least 8 characters")
+    if not password or len(password) < MIN_PASSWORD_LENGTH:
+        raise ValueError(f"password must be at least {MIN_PASSWORD_LENGTH} characters")
     salt = secrets.token_hex(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), rounds)
     return f"pbkdf2_sha256${rounds}${salt}${digest.hex()}"
