@@ -16,6 +16,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from . import security
 from .redaction import redact
 
 router = APIRouter(tags=["deployments"])
@@ -29,7 +30,8 @@ def _store(request: Request):
 
 
 def _actor(request: Request) -> str:
-    return (request.headers.get("x-actor") or "anonymous").strip()[:80]
+    # verified identity only: the session cookie, never a client-supplied header
+    return security.actor_of(request)[:80]
 
 
 def _now() -> str:

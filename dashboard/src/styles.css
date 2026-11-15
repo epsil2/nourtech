@@ -296,3 +296,11 @@ textarea.inp { width: 100%; resize: vertical; }
 table.tbl td { overflow-wrap: anywhere; }
 
 .row-item > b { flex: 0 0 auto; white-space: nowrap; }
+
+/* ---------- authentication gate ---------- */
+.shell--auth { grid-template-columns: 1fr; }
+.auth { display: grid; place-items: center; padding: 48px 20px; }
+.auth__card { width: 100%; max-width: 400px; display: grid; gap: 12px; padding: 28px; }
+.auth__card h1 { font-size: 20px; margin: 0; letter-spacing: -0.3px; }
+.auth__card .muted { font-size: 12px; line-height: 1.5; margin: 0 0 4px; color: var(--mut); }
+.auth__card .btn { margin-top: 6px; }

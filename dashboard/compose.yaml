@@ -32,6 +32,12 @@ services:
       traefik.http.routers.camilia.tls: "true"
       traefik.http.routers.camilia.tls.certresolver: letsencrypt
       traefik.http.routers.camilia.service: camilia
+      # Project Factory target host: same container, same credentials
+      traefik.http.routers.samya.entrypoints: websecure
+      traefik.http.routers.samya.rule: Host(`samya.nourredine.tech`)
+      traefik.http.routers.samya.tls: "true"
+      traefik.http.routers.samya.tls.certresolver: letsencrypt
+      traefik.http.routers.samya.service: camilia
       traefik.http.routers.camilia.middlewares: camilia-to-jannat
       traefik.http.middlewares.camilia-to-jannat.redirectregex.regex: ^https?://camilia\.nourredine\.tech(.*)
       traefik.http.middlewares.camilia-to-jannat.redirectregex.replacement: https://jannat.nourredine.tech$${1}

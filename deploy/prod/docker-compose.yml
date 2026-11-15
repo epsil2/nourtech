@@ -105,6 +105,16 @@ services:
       # The token is read by the server process only; the dashboard never sees it.
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       GITHUB_REPO: ${GITHUB_REPO:-}
+      # Project Factory: the owner (organisation or account) new repositories are
+      # created under. Never a value the browser can choose.
+      CAMILIA_GITHUB_OWNER: ${CAMILIA_GITHUB_OWNER:-epsil2}
+      # Server-side identity: sessions are required on every business route and the
+      # bootstrap admin is created once, from a secret that stays on the host.
+      FACTORY_AUTH: ${FACTORY_AUTH:-on}
+      CAMILIA_BOOTSTRAP_USER: ${CAMILIA_BOOTSTRAP_USER:-soufiane}
+      CAMILIA_BOOTSTRAP_PASSWORD: ${CAMILIA_BOOTSTRAP_PASSWORD:-}
+      # Background provisioning jobs: two at a time on this 1 vCPU host.
+      CP_MAX_JOBS: ${CP_MAX_JOBS:-2}
     depends_on:
       db:
         condition: service_healthy

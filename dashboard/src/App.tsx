@@ -4,6 +4,8 @@ import type { PageKey } from "./components/Sidebar";
 import { Agents } from "./pages/Agents";
 import { Deployments } from "./pages/Deployments";
 import { Executions } from "./pages/Executions";
+import { Factory } from "./pages/Factory";
+import { Login } from "./pages/Login";
 import { Projects } from "./pages/Projects";
 import { Backlog } from "./pages/Backlog";
 import { GitHub } from "./pages/GitHub";
@@ -14,6 +16,8 @@ import { Releases } from "./pages/Releases";
 import { Soon } from "./pages/Soon";
 import { Sprints } from "./pages/Sprints";
 import { api } from "./lib/api";
+import { logout, me } from "./lib/session";
+import type { User } from "./lib/session";
 
 function readHash(): PageKey {
   const key = window.location.hash.replace("#", "") as PageKey;
@@ -23,6 +27,30 @@ function readHash(): PageKey {
 export default function App() {
   const [page, setPage] = useState<PageKey>(readHash);
   const [health, setHealth] = useState<{ ok: boolean | null; label: string }>({ ok: null, label: "connexion à l'API…" });
+  const [user, setUser] = useState<User | null>(null);
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    me()
+      .then((resolved) => alive && setUser(resolved))
+      .catch(() => alive && setUser(null))
+      .finally(() => alive && setChecking(false));
+    const onUnauthorised = () => setUser(null);
+    window.addEventListener("camilia:unauthorised", onUnauthorised);
+    return () => {
+      alive = false;
+      window.removeEventListener("camilia:unauthorised", onUnauthorised);
+    };
+  }, []);
+
+  const signOut = async () => {
+    try {
+      await logout();
+    } finally {
+      setUser(null);
+    }
+  };
 
   useEffect(() => {
     const onHash = () => setPage(readHash());
@@ -52,12 +80,36 @@ export default function App() {
 
   const meta = NAV.find((n) => n.key === page);
 
+  if (checking) {
+    return (
+      <div className="shell shell--auth">
+        <main className="auth">
+          <p className="muted">Vérification de la session…</p>
+        </main>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Login onSignedIn={() => me().then(setUser).catch(() => setUser(null))} />;
+  }
+
   return (
     <div className="shell">
-      <Sidebar current={page} onNavigate={go} apiOk={health.ok} apiLabel={health.label} />
+      <Sidebar
+        current={page}
+        onNavigate={go}
+        apiOk={health.ok}
+        apiLabel={health.label}
+        username={user.username}
+        role={user.role}
+        onSignOut={signOut}
+      />
       <main>
         {page === "overview" && <Overview onNewAgent={() => go("agents")} />}
         {page === "projects" && <Projects />}
+        {page === "factory" && <Factory />}
+        {page === "portfolio" && <Factory />}
         {page === "agents" && <Agents />}
         {page === "backlog" && <Backlog />}
         {page === "sprints" && <Sprints />}

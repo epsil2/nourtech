@@ -3,6 +3,8 @@ import type { ReactNode } from "react";
 export type PageKey =
   | "overview"
   | "projects"
+  | "factory"
+  | "portfolio"
   | "agents"
   | "backlog"
   | "sprints"
@@ -24,6 +26,8 @@ const I = (d: string) => (
 export const NAV: Item[] = [
   { key: "overview", label: "Vue d'ensemble", icon: I("M3 12h7V3H3zM14 21h7v-9h-7zM14 3v6h7V3zM3 21h7v-6H3z") },
   { key: "projects", label: "Projets", icon: I("M4 6h6l1.6 2H20v10H4z") },
+  { key: "factory", label: "Project Factory", icon: I("M3 21h18M5 21V10l5 3V10l5 3V6l5 4v11M8 21v-3h3v3M16 17h1M16 14h1") },
+  { key: "portfolio", label: "Portefeuille projets", icon: I("M4 5h16v4H4zM4 11h7v8H4zM13 11h7v8h-7z") },
   { key: "agents", label: "Agents", icon: I("M12 11a3.2 3.2 0 1 0 0-6.4A3.2 3.2 0 0 0 12 11zM5 20c1.5-4 4-6 7-6s5.5 2 7 6") },
   { key: "backlog", label: "Backlog Jira", icon: I("M4 6h16M4 12h16M4 18h10") },
   { key: "sprints", label: "Sprints", icon: I("M4 5h16v15H4zM8 3v4M16 3v4") },
@@ -40,11 +44,17 @@ export function Sidebar({
   onNavigate,
   apiOk,
   apiLabel,
+  username,
+  role,
+  onSignOut,
 }: {
   current: PageKey;
   onNavigate: (key: PageKey) => void;
   apiOk: boolean | null;
   apiLabel: string;
+  username?: string;
+  role?: string;
+  onSignOut?: () => void;
 }) {
   return (
     <aside>
@@ -82,6 +92,17 @@ export function Sidebar({
           <span>Projet Jira</span>
           <span>SCRUM</span>
         </div>
+        {username && (
+          <div className="row">
+            <span>{username}</span>
+            <span>{role ?? ""}</span>
+          </div>
+        )}
+        {onSignOut && (
+          <button className="btn ghost sm" type="button" onClick={onSignOut}>
+            Se déconnecter
+          </button>
+        )}
       </div>
     </aside>
   );

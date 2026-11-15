@@ -8,9 +8,14 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
+    credentials: "same-origin",
     ...init,
     headers: { accept: "application/json", ...(init?.headers ?? {}) },
   });
+  if (res.status === 401) {
+    // The session is gone or was never opened: let the shell show the login screen.
+    window.dispatchEvent(new CustomEvent("camilia:unauthorised"));
+  }
   const text = await res.text();
   let payload: unknown = null;
   try {
@@ -30,19 +35,21 @@ export const api = {
   post: <T>(path: string, body: unknown) =>
     request<T>(path, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-actor": actor() },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     }),
   patch: <T>(path: string, body: unknown) =>
     request<T>(path, {
       method: "PATCH",
-      headers: { "content-type": "application/json", "x-actor": actor() },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     }),
 };
 
+/* The browser no longer asserts who it is: the server derives the actor from the session
+   cookie. These helpers only label what the server already told us, for display. */
 export function actor(): string {
-  return localStorage.getItem("camilia.actor") ?? "soufiane";
+  return localStorage.getItem("camilia.actor") ?? "—";
 }
 
 export function setActor(value: string) {

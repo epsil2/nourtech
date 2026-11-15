@@ -17,6 +17,9 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from .api import router
+from .api_factory import router as factory_router
+from .api_auth import router as auth_router
+from .security import AuthGuard, bootstrap as bootstrap_auth
 from .api_jira import router as jira_router
 from .api_prd import router as prd_router
 from .api_requests import router as requests_router
@@ -60,6 +63,7 @@ async def lifespan(app: FastAPI):
     store = build_store()
     store.init()
     app.state.store = store
+    bootstrap_auth(store)
     boot_projects(store)
     boot_executions(store)
     yield
@@ -73,6 +77,9 @@ app = FastAPI(
     redoc_url=None,
     lifespan=lifespan,
 )
+app.add_middleware(AuthGuard)
+app.include_router(auth_router)
+app.include_router(factory_router)
 app.include_router(router)
 app.include_router(jira_router)
 app.include_router(prd_router)

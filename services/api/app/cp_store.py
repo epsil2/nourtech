@@ -42,6 +42,13 @@ CREATE TABLE IF NOT EXISTS cp_documents (
 CREATE INDEX IF NOT EXISTS cp_documents_kind_idx ON cp_documents (kind, created_at DESC);
 CREATE INDEX IF NOT EXISTS cp_documents_project_idx ON cp_documents (project_id, kind);
 CREATE INDEX IF NOT EXISTS cp_documents_doc_idx ON cp_documents USING gin (doc jsonb_path_ops);
+-- Phase 1 Project Factory: uniqueness that must hold in the database, not only in code
+CREATE UNIQUE INDEX IF NOT EXISTS cp_factory_project_key_idx
+    ON cp_documents ((doc->>'key')) WHERE kind = 'factory_project';
+CREATE UNIQUE INDEX IF NOT EXISTS cp_factory_operation_key_idx
+    ON cp_documents ((doc->>'idempotency_key')) WHERE kind = 'factory_operation';
+CREATE UNIQUE INDEX IF NOT EXISTS cp_factory_jira_key_idx
+    ON cp_documents ((doc->>'jira_key')) WHERE kind = 'factory_jira_project';
 """
 
 

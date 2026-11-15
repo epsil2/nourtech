@@ -24,6 +24,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from . import cp_jobs, jira, jira_write
+from . import security
 from .redaction import redact
 
 router = APIRouter(tags=["control-plane"])
@@ -42,7 +43,8 @@ def _store(request: Request):
 
 
 def _actor(request: Request) -> str:
-    return (request.headers.get("x-actor") or "anonymous").strip()[:80]
+    # verified identity only: the session cookie, never a client-supplied header
+    return security.actor_of(request)[:80]
 
 
 def _audit(request: Request, action: str, entity_id: str, payload: dict[str, Any], entity_type: str = "project") -> None:
