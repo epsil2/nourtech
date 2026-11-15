@@ -20,11 +20,22 @@ services:
     labels:
       traefik.enable: "true"
       traefik.docker.network: camilia_internal
+      # served host
+      traefik.http.routers.jannat.entrypoints: websecure
+      traefik.http.routers.jannat.rule: Host(`jannat.nourredine.tech`)
+      traefik.http.routers.jannat.tls: "true"
+      traefik.http.routers.jannat.tls.certresolver: letsencrypt
+      traefik.http.routers.jannat.service: camilia
+      # the former address keeps working, it just redirects
       traefik.http.routers.camilia.entrypoints: websecure
       traefik.http.routers.camilia.rule: Host(`camilia.nourredine.tech`)
       traefik.http.routers.camilia.tls: "true"
       traefik.http.routers.camilia.tls.certresolver: letsencrypt
       traefik.http.routers.camilia.service: camilia
+      traefik.http.routers.camilia.middlewares: camilia-to-jannat
+      traefik.http.middlewares.camilia-to-jannat.redirectregex.regex: ^https?://camilia\.nourredine\.tech(.*)
+      traefik.http.middlewares.camilia-to-jannat.redirectregex.replacement: https://jannat.nourredine.tech$${1}
+      traefik.http.middlewares.camilia-to-jannat.redirectregex.permanent: "true"
       traefik.http.services.camilia.loadbalancer.server.port: "80"
     logging:
       driver: json-file
