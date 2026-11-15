@@ -199,3 +199,29 @@ def test_factory_actor_is_the_session_identity(client, app_module):
     project_id = created.json()["project"]["project"]["id"]
     rows = client.get(f"/api/v1/factory/projects/{project_id}/audit").json()["items"]
     assert rows and all(row["actor"] == "soufiane" for row in rows)
+
+
+def test_password_floor_is_the_declared_constant(client):
+    """The hash layer and the API schema must agree on one floor, not two guesses."""
+    from app import security as sec
+
+    assert sec.MIN_PASSWORD_LENGTH == 6
+    assert sec.hash_password("x" * sec.MIN_PASSWORD_LENGTH)
+    with pytest.raises(ValueError):
+        sec.hash_password("x" * (sec.MIN_PASSWORD_LENGTH - 1))
+
+    assert login(client).status_code == 200
+    short = client.post(
+        "/api/v1/auth/password",
+        json={
+            "current_password": ADMIN_PASSWORD,
+            "new_password": "x" * (sec.MIN_PASSWORD_LENGTH - 1),
+        },
+    )
+    assert short.status_code == 422
+    accepted = client.post(
+        "/api/v1/auth/password",
+        json={"current_password": ADMIN_PASSWORD, "new_password": "x" * sec.MIN_PASSWORD_LENGTH},
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert login(client, password="x" * sec.MIN_PASSWORD_LENGTH).status_code == 200

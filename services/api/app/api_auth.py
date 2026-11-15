@@ -37,12 +37,12 @@ class LoginIn(BaseModel):
 
 class PasswordIn(BaseModel):
     current_password: str = Field(min_length=1, max_length=256)
-    new_password: str = Field(min_length=8, max_length=256)
+    new_password: str = Field(min_length=security.MIN_PASSWORD_LENGTH, max_length=256)
 
 
 class UserIn(BaseModel):
     username: str = Field(min_length=2, max_length=64, pattern=r"^[a-zA-Z0-9._-]+$")
-    password: str = Field(min_length=8, max_length=256)
+    password: str = Field(min_length=security.MIN_PASSWORD_LENGTH, max_length=256)
     role: str = "viewer"
     email: str = Field(default="", max_length=200)
 
