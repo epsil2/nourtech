@@ -46,6 +46,17 @@ TAG="${FACTORY_IMAGE_TAG:-}"
 [ -f "$ENV_FILE" ] || fail "$ENV_FILE is missing: create it from deploy/prod/.env.example and chmod 600"
 chmod 600 "$ENV_FILE" 2>/dev/null || true
 grep -q '^FACTORY_DB_PASSWORD=change-me-production$' "$ENV_FILE" && fail "FACTORY_DB_PASSWORD is still the placeholder in $ENV_FILE"
+
+# The dashboard API now requires a session on every business route. The bootstrap
+# administrator is created once at startup from CAMILIA_BOOTSTRAP_PASSWORD; if the
+# operator has not set one, generate it here and keep it in the 0600 env file — it is
+# never printed, never committed and never sent to the browser.
+if ! grep -q '^CAMILIA_BOOTSTRAP_PASSWORD=.' "$ENV_FILE"; then
+  umask 077
+  printf 'CAMILIA_BOOTSTRAP_PASSWORD=%s\n' "$(openssl rand -base64 24 | tr -d '/+=[:space:]' | cut -c1-28)" >> "$ENV_FILE"
+  log "bootstrap administrator password generated into $ENV_FILE (mode 600)"
+fi
+grep -q '^CAMILIA_BOOTSTRAP_USER=.' "$ENV_FILE" || printf 'CAMILIA_BOOTSTRAP_USER=soufiane\n' >> "$ENV_FILE"
 command -v docker >/dev/null || fail "docker is not installed"
 docker compose version >/dev/null 2>&1 || fail "docker compose plugin is missing"
 
