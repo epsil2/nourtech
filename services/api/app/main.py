@@ -30,6 +30,9 @@ from .api_github import router as github_router
 from .api_system import router as system_router
 from .api_integrations import router as integrations_router
 from .api_obs import router as obs_router
+from .api_projects import boot as boot_projects, router as projects_router
+from .api_executions import boot as boot_executions, router as executions_router
+from .api_deployments import router as deployments_router
 from .store import build_store
 
 
@@ -57,6 +60,8 @@ async def lifespan(app: FastAPI):
     store = build_store()
     store.init()
     app.state.store = store
+    boot_projects(store)
+    boot_executions(store)
     yield
     store.close()
 
@@ -82,6 +87,9 @@ app.include_router(jira_board_router)
 app.include_router(github_router)
 app.include_router(system_router)
 app.include_router(integrations_router)
+app.include_router(projects_router)
+app.include_router(executions_router)
+app.include_router(deployments_router)
 
 
 @app.get("/healthz")
