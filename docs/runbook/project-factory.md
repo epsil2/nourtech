@@ -152,3 +152,48 @@ PY
 
 `installation_identity` renvoie l'id d'installation et le nombre de dépôts couverts ; une
 erreur 404 signifie que la App n'est pas installée sur le compte cible.
+
+## Déploiement en production — `samya.nourredine.tech`
+
+Le domaine `samya` porte la Project Factory ; `jannat` porte le dashboard historique et
+`camilia` redirige en 301 vers `jannat`. Les trois routeurs sont déclarés par labels sur
+le même conteneur `camilia-web` : Traefik les découvre sans configuration supplémentaire.
+
+### Procédure appliquée (tag `ce5adaf`)
+
+```bash
+# 1. API factory (réseau interne, aucun port publié)
+FACTORY_IMAGE_TAG=ce5adaf \
+FACTORY_SECRETS_FILE=/opt/agent-factory/secrets/jira.env:/opt/agent-factory/secrets/github.env:/opt/agent-factory/secrets/github-app.env \
+  bash scripts/deploy_prod.sh
+
+# 2. Dashboard + labels Traefik (samya, jannat, camilia)
+cd dashboard && CAMILIA_TAG=ce5adaf docker compose build && CAMILIA_TAG=ce5adaf docker compose up -d --wait
+```
+
+Les secrets arrivent par fichiers d'environnement en `0600` ; aucun n'est monté dans le
+dépôt ni exposé au navigateur. `certresolver=letsencrypt` est présent sur les trois
+routeurs : le certificat est émis au premier appel HTTPS, après quoi plus aucun
+avertissement de navigateur n'apparaît.
+
+### Preuves de recette (2026-11-15)
+
+- `curl https://samya.nourredine.tech/` → **200**, certificat `CN=samya.nourredine.tech`,
+  émis par Let's Encrypt (`C=US, O=Let's Encrypt, CN=YR1`), valide du 15/11/2026 au
+  13/02/2027 — plus de `TRAEFIK DEFAULT CERT`.
+- Sans identifiants → **401** (basic auth nginx) ; avec → **200**, `<title>Camilia — AI Agent Factory</title>`.
+- `GET /api/v1/auth/config` → `{"auth_required":true,"bootstrap_configured":true}`.
+- `GET /api/v1/factory/catalogue` sans session → **401** ; avec session → **200** :
+  7 types de projet, 4 templates `1.0.0`, 19 états, 6 étapes, `jira.ready=true`,
+  `github.ready=true` (credential `pat`).
+- `GET /api/v1/factory/projects` → **200** `{"items":[],"counts":{},"total":0}`.
+- `jannat` → **200** avec identifiants (inchangé), `trading.nourredine.tech` → **200**,
+  `camilia` → **301** vers `jannat` : aucun service voisin perturbé.
+
+### Limite connue à ce déploiement
+
+`github.ready=true` repose sur le jeton personnel (`pat`). Le mode `app` reste
+inopérant : il manque `GITHUB_APP_ID`, `GITHUB_APP_CLIENT_ID` et la clé privée `.pem`.
+Le provisioning réussi de bout en bout suppose donc soit une App complétée, soit un
+jeton dont le périmètre couvre les dépôts qu'il crée — ce second point n'a jamais
+fonctionné sur ce VPS (dépôt créé en 201, puis 404 à la lecture).
