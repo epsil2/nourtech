@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from .api import router
+from .api_factory import router as factory_router
 from .api_auth import router as auth_router
 from .security import AuthGuard, bootstrap as bootstrap_auth
 from .api_jira import router as jira_router
@@ -78,6 +79,7 @@ app = FastAPI(
 )
 app.add_middleware(AuthGuard)
 app.include_router(auth_router)
+app.include_router(factory_router)
 app.include_router(router)
 app.include_router(jira_router)
 app.include_router(prd_router)
