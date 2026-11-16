@@ -15,12 +15,53 @@ export type BoardIssue = {
   url: string | null;
 };
 
+export type BoardFacetSprint = { id: string; name: string; state: string; issues: number };
+export type BoardFacetFeature = {
+  key: string;
+  summary: string;
+  type: string | null;
+  status: string | null;
+  issues: number;
+};
+export type BoardFacetStory = {
+  key: string;
+  summary: string;
+  type: string | null;
+  status: string | null;
+  parent: string | null;
+};
+
+export type BacklogFacets = {
+  sprints: BoardFacetSprint[];
+  features: BoardFacetFeature[];
+  stories: BoardFacetStory[];
+  backlog_only: number;
+};
+
+export type BacklogFilters = {
+  sprint?: string;
+  feature?: string;
+  story?: string;
+  q?: string;
+};
+
 export type Backlog = {
   project: string;
   items: BoardIssue[];
   count: number;
+  total: number;
+  truncated: boolean;
   by_status: Record<string, number>;
   by_type: Record<string, number>;
+  facets: BacklogFacets;
+  filters: BacklogFilters & { active: number };
+};
+
+export type JiraProject = {
+  key: string;
+  name: string;
+  style: string | null;
+  board: number | null;
 };
 
 export type Sprint = {
@@ -138,8 +179,16 @@ export type AuditEvent = {
 };
 
 export const board = {
-  backlog: (project = "SCRUM") =>
-    api.get<Backlog>(`/api/v1/integrations/jira/board/backlog?project=${project}&limit=100`),
+  projects: () => api.get<{ items: JiraProject[]; count: number }>("/api/v1/integrations/jira/board/projects"),
+  backlog: (project = "SCRUM", filters: BacklogFilters = {}, limit = 300, refresh = false) => {
+    const params = new URLSearchParams({ project, limit: String(limit) });
+    if (filters.sprint) params.set("sprint", filters.sprint);
+    if (filters.feature) params.set("feature", filters.feature);
+    if (filters.story) params.set("story", filters.story);
+    if (filters.q) params.set("q", filters.q);
+    if (refresh) params.set("refresh", "true");
+    return api.get<Backlog>(`/api/v1/integrations/jira/board/backlog?${params.toString()}`);
+  },
   sprints: (project = "SCRUM", boardId = 1) =>
     api.get<SprintsPayload>(`/api/v1/integrations/jira/board/sprints?project=${project}&board=${boardId}`),
 };

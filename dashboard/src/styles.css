@@ -285,6 +285,27 @@ textarea.inp { width: 100%; resize: vertical; }
 .tbl a:hover { border-bottom-color: #7c5cff; }
 .field > label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--mut-2); font-weight: 600; }
 
+/* --- backlog filter bar: project / sprint / feature / user story --- */
+.filters {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 2px 14px; padding: 12px 14px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+}
+.filters .field { padding: 0; min-width: 0; }
+.filters .inp { width: 100%; min-width: 0; }
+.filter-reset { align-content: end; }
+.filter-reset .btn { width: 100%; }
+select.inp {
+  appearance: none; -webkit-appearance: none; cursor: pointer; padding-right: 26px;
+  text-overflow: ellipsis;
+  background-image: linear-gradient(45deg, transparent 50%, var(--mut) 50%),
+    linear-gradient(135deg, var(--mut) 50%, transparent 50%);
+  background-position: calc(100% - 14px) calc(50% + 1px), calc(100% - 9px) calc(50% + 1px);
+  background-size: 5px 5px, 5px 5px; background-repeat: no-repeat;
+}
+select.inp:disabled { opacity: 0.55; cursor: progress; }
+select.inp option { background: var(--panel); color: var(--fg); }
+
 @media (max-width: 1100px) {
   .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .grid-2 { grid-template-columns: 1fr; }

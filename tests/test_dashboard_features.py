@@ -151,6 +151,137 @@ def test_backlog_project_must_look_like_a_jira_key(client, monkeypatch):
     assert client.get("/api/v1/integrations/jira/board/backlog?project=scrum").status_code == 422
 
 
+# -- backlog filtering (project / sprint / feature / user story) ----------
+def _issue(key, summary, type_, status="To Do", parent=None, sprints=None):
+    return {
+        "key": key,
+        "summary": summary,
+        "type": type_,
+        "status": status,
+        "assignee": None,
+        "priority": None,
+        "labels": [],
+        "parent": parent,
+        "sprints": sprints or [],
+        "created": "2026-11-02",
+        "updated": "2026-11-04",
+        "url": f"https://x/browse/{key}",
+    }
+
+
+class FilterJira(FakeJira):
+    """One epic with two stories, one story in a sprint, one loose task."""
+
+    def board_issues(self, jql, limit=100):
+        assert "project = SCRUM" in jql or "project = RM002" in jql
+        return [
+            _issue("SCRUM-100", "Gouvernance des agents", "Epic"),
+            _issue("SCRUM-101", "Publier un backlog", "Story", parent="SCRUM-100",
+                   sprints=[{"id": 10, "name": "Sprint 6", "state": "future"}]),
+            _issue("SCRUM-102", "Relire un ticket", "Story", parent="SCRUM-100"),
+            _issue("SCRUM-103", "Tâche d'infrastructure", "Task"),
+        ]
+
+    def projects(self):
+        return [
+            {"key": "SCRUM", "name": "Ai Factory Software Team", "style": "next-gen"},
+            {"key": "RM002", "name": "IT Release Readiness", "style": "next-gen"},
+        ]
+
+    def boards(self):
+        return [{"id": 1, "name": "SCRUM board", "type": "simple", "project_key": "SCRUM"}]
+
+
+def _fresh():
+    from app import api_jira_board
+
+    api_jira_board._cache.clear()
+
+
+def test_projects_endpoint_pairs_each_project_with_its_board(client, monkeypatch):
+    _fresh()
+    monkeypatch.setattr("app.api_jira_board.JiraClient", FilterJira)
+    body = client.get("/api/v1/integrations/jira/board/projects").json()
+    assert body["count"] == 2
+    row = next(p for p in body["items"] if p["key"] == "SCRUM")
+    assert row["board"] == 1
+    assert next(p for p in body["items"] if p["key"] == "RM002")["board"] is None
+
+
+def test_backlog_facets_drive_the_four_drop_downs(client, monkeypatch):
+    _fresh()
+    monkeypatch.setattr("app.api_jira_board.JiraClient", FilterJira)
+    body = client.get("/api/v1/integrations/jira/board/backlog?project=SCRUM").json()
+    assert body["total"] == 4 and body["count"] == 4
+    assert [f["key"] for f in body["facets"]["features"]] == ["SCRUM-100"]
+    assert body["facets"]["features"][0]["issues"] == 2
+    assert [s["key"] for s in body["facets"]["stories"]] == ["SCRUM-101", "SCRUM-102", "SCRUM-103"]
+    assert [s["name"] for s in body["facets"]["sprints"]] == ["Sprint 6"]
+    assert body["facets"]["backlog_only"] == 3
+    assert body["filters"]["active"] == 0
+
+
+def test_feature_selection_lists_the_feature_and_its_stories(client, monkeypatch):
+    _fresh()
+    monkeypatch.setattr("app.api_jira_board.JiraClient", FilterJira)
+    body = client.get(
+        "/api/v1/integrations/jira/board/backlog?project=SCRUM&feature=SCRUM-100"
+    ).json()
+    assert [i["key"] for i in body["items"]] == ["SCRUM-100", "SCRUM-101", "SCRUM-102"]
+    # facets stay complete: the other selections must remain reachable
+    assert len(body["facets"]["features"]) == 1
+    assert len(body["facets"]["stories"]) == 3
+
+
+def test_story_selection_narrows_to_one_issue(client, monkeypatch):
+    _fresh()
+    monkeypatch.setattr("app.api_jira_board.JiraClient", FilterJira)
+    body = client.get(
+        "/api/v1/integrations/jira/board/backlog?project=SCRUM&story=SCRUM-102"
+    ).json()
+    assert [i["key"] for i in body["items"]] == ["SCRUM-102"]
+    assert body["filters"]["story"] == "SCRUM-102"
+    assert body["filters"]["active"] == 1
+
+
+def test_sprint_selection_and_the_no_sprint_bucket(client, monkeypatch):
+    _fresh()
+    monkeypatch.setattr("app.api_jira_board.JiraClient", FilterJira)
+    in_sprint = client.get(
+        "/api/v1/integrations/jira/board/backlog?project=SCRUM&sprint=10"
+    ).json()
+    assert [i["key"] for i in in_sprint["items"]] == ["SCRUM-101"]
+    no_sprint = client.get(
+        "/api/v1/integrations/jira/board/backlog?project=SCRUM&sprint=none"
+    ).json()
+    assert [i["key"] for i in no_sprint["items"]] == ["SCRUM-100", "SCRUM-102", "SCRUM-103"]
+
+
+def test_filters_combine_and_counts_describe_what_is_shown(client, monkeypatch):
+    _fresh()
+    monkeypatch.setattr("app.api_jira_board.JiraClient", FilterJira)
+    body = client.get(
+        "/api/v1/integrations/jira/board/backlog?project=SCRUM&feature=SCRUM-100&sprint=10"
+    ).json()
+    assert [i["key"] for i in body["items"]] == ["SCRUM-101"]
+    assert body["count"] == 1 and body["total"] == 4
+    assert body["by_type"] == {"Story": 1}
+    assert body["by_status"] == {"To Do": 1}
+
+    searched = client.get(
+        "/api/v1/integrations/jira/board/backlog?project=SCRUM&q=relire"
+    ).json()
+    assert [i["key"] for i in searched["items"]] == ["SCRUM-102"]
+
+
+def test_backlog_rejects_a_malformed_feature_key(client, monkeypatch):
+    _fresh()
+    monkeypatch.setattr("app.api_jira_board.JiraClient", FilterJira)
+    assert client.get(
+        "/api/v1/integrations/jira/board/backlog?project=SCRUM&feature=nope"
+    ).status_code == 422
+
+
 # -- monitoring -----------------------------------------------------------
 def test_system_snapshot_reports_real_numbers(client):
     body = client.get("/api/v1/system").json()

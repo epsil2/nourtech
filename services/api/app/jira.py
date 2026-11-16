@@ -19,6 +19,9 @@ import urllib.request
 from typing import Any, Callable, Iterable
 
 TIMEOUT = 15
+# hard ceiling on one board read: pages are followed server-side, so a runaway
+# query must still stop somewhere
+MAX_BOARD_ISSUES = 500
 
 
 class JiraNotConfigured(RuntimeError):
@@ -121,6 +124,22 @@ class JiraClient:
             for s in body.get("values", [])
         ]
 
+    def boards(self) -> list[dict[str, Any]]:
+        """Agile boards with the project each one belongs to (sprint lookups need it)."""
+        body = self._get("/rest/agile/1.0/board", {"maxResults": 50})
+        out = []
+        for b in body.get("values", []) or []:
+            location = b.get("location") or {}
+            out.append(
+                {
+                    "id": b.get("id"),
+                    "name": b.get("name"),
+                    "type": b.get("type"),
+                    "project_key": location.get("projectKey"),
+                }
+            )
+        return out
+
     def issues(self, jql: str, limit: int = 100) -> list[dict[str, Any]]:
         body = self._get(
             "/rest/api/3/search/jql",
@@ -149,19 +168,33 @@ class JiraClient:
 
         Kept separate from :meth:`issues` so the plain search stays cheap: this one
         asks for more fields and normalises the sprint custom field, whose id varies
-        between Jira sites.
+        between Jira sites. Pages through ``nextPageToken`` so a project larger than
+        one page is not silently truncated at 100.
         """
         sprint_field = os.getenv("JIRA_SPRINT_FIELD", "customfield_10020")
         fields = (
             "summary,status,issuetype,assignee,priority,labels,parent,created,updated,"
             f"{sprint_field}"
         )
-        body = self._get(
-            "/rest/api/3/search/jql",
-            {"jql": jql, "maxResults": min(limit, 100), "fields": fields},
-        )
+        limit = max(1, min(limit, MAX_BOARD_ISSUES))
+        raw_issues: list[dict[str, Any]] = []
+        token: str | None = None
+        while len(raw_issues) < limit:
+            params: dict[str, Any] = {
+                "jql": jql,
+                "maxResults": min(100, limit - len(raw_issues)),
+                "fields": fields,
+            }
+            if token:
+                params["nextPageToken"] = token
+            body = self._get("/rest/api/3/search/jql", params)
+            page = body.get("issues") or []
+            raw_issues.extend(page)
+            token = body.get("nextPageToken")
+            if not token or body.get("isLast") or not page:
+                break
         out: list[dict[str, Any]] = []
-        for issue in body.get("issues", []):
+        for issue in raw_issues[:limit]:
             f = issue.get("fields") or {}
             raw_sprints = f.get(sprint_field) or []
             if isinstance(raw_sprints, dict):
