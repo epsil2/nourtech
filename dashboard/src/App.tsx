@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Sidebar, NAV } from "./components/Sidebar";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import type { PageKey } from "./components/Sidebar";
 import { Agents } from "./pages/Agents";
 import { Deployments } from "./pages/Deployments";
@@ -193,6 +194,7 @@ export default function App() {
       <div className="body">
         <TopBar go={go} username={user.username} role={user.role} />
         <main>
+          <ErrorBoundary page={page}>
           {page === "overview" && <Overview onNewAgent={() => go("agents")} />}
           {page === "portfolio" && <Portfolio onOpenFactory={() => go("factory")} />}
           {page === "factory" && <Factory />}
@@ -206,6 +208,7 @@ export default function App() {
           {page === "monitoring" && <Monitoring />}
           {page === "settings" && <Integrations />}
           {!meta && <Soon title="Introuvable" sprint="" body="Cette page n'existe pas." />}
+          </ErrorBoundary>
         </main>
       </div>
     </div>
