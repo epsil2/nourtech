@@ -118,6 +118,23 @@ def test_prod_uses_its_own_volume(compose):
     assert dev["volumes"]["factory-db-data"]["name"] != compose["volumes"]["factory-db-data"]["name"]
 
 
+def test_hermes_cli_is_mounted_read_only_into_the_api(compose):
+    """The Hermes CLI runs in the API container, but never with write access to
+    the host installation: only a private HERMES_HOME is writable."""
+    api = compose["services"]["api"]
+    volumes = api.get("volumes", [])
+    host_slices = [v for v in volumes if v.startswith("/root/.hermes/")]
+    assert host_slices, "the API needs the host Hermes slices to reach the CLI"
+    for mount in host_slices:
+        assert mount.endswith(":ro"), f"host Hermes must be read-only: {mount}"
+    env = api["environment"]
+    assert env["HERMES_HOME"] == "/var/lib/hermes"
+    assert env["HERMES_BIN"] == "${HERMES_BIN:-/opt/agent-factory/hermes-bin/hermes}"
+    assert any(
+        v.startswith("/opt/agent-factory/hermes-home:/var/lib/hermes") for v in volumes
+    ), "the container needs its own writable Hermes home"
+
+
 def test_env_example_carries_no_real_secret():
     example = (ROOT / "deploy" / "prod" / ".env.example").read_text()
     assert "change-me-production" in example

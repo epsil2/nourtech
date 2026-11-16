@@ -115,6 +115,21 @@ services:
       CAMILIA_BOOTSTRAP_PASSWORD: ${CAMILIA_BOOTSTRAP_PASSWORD:-}
       # Background provisioning jobs: two at a time on this 1 vCPU host.
       CP_MAX_JOBS: ${CP_MAX_JOBS:-2}
+      # Hermes CLI: the API shells out to `hermes kanban ...` to create the
+      # project board. The CLI is not baked into the image: read-only slices of
+      # the host installation are mounted under /hermes and the shim
+      # (hermes-bin/hermes) runs it on the dependency environment Hermes
+      # committed for itself. HERMES_HOME stays private to this container.
+      HERMES_BIN: ${HERMES_BIN:-/opt/agent-factory/hermes-bin/hermes}
+      HERMES_HOME: /var/lib/hermes
+      HOME: /var/lib/hermes
+    volumes:
+      - /root/.hermes/tools:/hermes/tools:ro
+      - /root/.hermes/installs:/hermes/installs:ro
+      - /root/.hermes/hermes-agent:/hermes/agent:ro
+      - /opt/agent-factory/hermes-bin:/opt/agent-factory/hermes-bin:ro
+      # writable, private Hermes home: the kanban database lives here
+      - /opt/agent-factory/hermes-home:/var/lib/hermes
     depends_on:
       db:
         condition: service_healthy
@@ -136,7 +151,10 @@ services:
       resources:
         limits:
           cpus: "0.50"
-          memory: 192M
+          # 280M: the API peaks around 55M, plus ~80M when it shells out to the
+          # Hermes CLI (board creation). The stack total stays under the 700M
+          # budget enforced by tests/test_prod_policy.py.
+          memory: 280M
     logging: *default-logging
 
 networks:
