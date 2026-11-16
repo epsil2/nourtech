@@ -70,7 +70,11 @@ export type Sprint = {
   state: string;
   start?: string;
   end?: string;
+  /** tickets of the current selection in this sprint */
   issues: number;
+  /** tickets in this sprint before any filter */
+  all_issues?: number;
+  done?: number;
 };
 
 export type SprintsPayload = {
@@ -79,6 +83,13 @@ export type SprintsPayload = {
   items: Sprint[];
   count: number;
   active: Sprint | null;
+  total: number;
+  matching: number;
+  selected: number;
+  unscheduled: number;
+  tickets: BoardIssue[];
+  facets: BacklogFacets;
+  filters: BacklogFilters & { active: number };
 };
 
 export type Repo = {
@@ -189,8 +200,15 @@ export const board = {
     if (refresh) params.set("refresh", "true");
     return api.get<Backlog>(`/api/v1/integrations/jira/board/backlog?${params.toString()}`);
   },
-  sprints: (project = "SCRUM", boardId = 1) =>
-    api.get<SprintsPayload>(`/api/v1/integrations/jira/board/sprints?project=${project}&board=${boardId}`),
+  sprints: (project = "SCRUM", filters: BacklogFilters = {}, refresh = false) => {
+    const params = new URLSearchParams({ project });
+    if (filters.sprint) params.set("sprint", filters.sprint);
+    if (filters.feature) params.set("feature", filters.feature);
+    if (filters.story) params.set("story", filters.story);
+    if (filters.q) params.set("q", filters.q);
+    if (refresh) params.set("refresh", "true");
+    return api.get<SprintsPayload>(`/api/v1/integrations/jira/board/sprints?${params.toString()}`);
+  },
 };
 
 export const gh = {

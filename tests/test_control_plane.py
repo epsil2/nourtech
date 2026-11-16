@@ -270,6 +270,39 @@ def test_execution_refuses_to_start_without_hermes(client, monkeypatch):
     assert client.get("/api/v1/executions").json()["total"] == 0
 
 
+def test_execution_imports_a_jira_project_on_first_launch(client, monkeypatch):
+    from app import api_executions
+
+    adapter = FakeAdapter()
+    monkeypatch.setattr(api_executions, "_adapter", lambda: adapter)
+
+    created = client.post(
+        "/api/v1/executions",
+        json={
+            "project_id": "jira:OPS",
+            "objective": "traiter la story OPS-12",
+            "jira_key": "OPS-12",
+            "sprint_id": "42",
+            "sprint_name": "Sprint 8",
+            "feature_key": "OPS-3",
+            "story_key": "OPS-12",
+        },
+    )
+    assert created.status_code == 201, created.text
+    execution = created.json()
+    assert execution["sprint_name"] == "Sprint 8"
+    assert execution["story_key"] == "OPS-12"
+
+    keys = {project["key"] for project in client.get("/api/v1/projects").json()["projects"]}
+    assert "OPS" in keys
+
+
+def test_executions_list_survives_an_invalid_jira_filter(client):
+    body = client.get("/api/v1/executions", params={"story": "pas-une-cle"}).json()
+    assert body["total"] == 0
+    assert body["warnings"] and "format invalide" in body["warnings"][0]
+
+
 def test_execution_lifecycle_sync_and_cancel(client, monkeypatch):
     from app import api_executions
 
@@ -432,3 +465,80 @@ def test_metrics_report_an_honest_cost_and_success_rate(client, monkeypatch):
     assert metrics["success_rate"] == 1.0
     assert metrics["cost"] is None
     assert "non mesuré" in metrics["cost_note"]
+
+
+class _JiraPortfolio:
+    """Jira knows the portfolio before the control plane does."""
+
+    configured = True
+    site = "https://nourtech.atlassian.net"
+
+    def boards(self):
+        return [
+            {"id": 1, "name": "SCRUM board", "type": "simple", "project_key": "SCRUM"},
+            {"id": 2, "name": "RM002 board", "type": "simple", "project_key": "RM002"},
+        ]
+
+    def projects(self):
+        return [
+            {"key": "SCRUM", "name": "Ai Factory Software Team"},
+            {"key": "RM002", "name": "IT Release Readiness"},
+        ]
+
+
+def test_the_deployment_project_list_is_never_empty_when_jira_knows_the_projects(client, monkeypatch):
+    from app import api_deployments
+
+    monkeypatch.setattr(api_deployments, "JiraClient", _JiraPortfolio)
+    body = client.get("/api/v1/deployments/projects").json()
+
+    ids = {p["id"] for p in body["projects"]}
+    assert {"jira:SCRUM", "jira:RM002"} <= ids
+    assert body["jira"] is True
+    assert next(p for p in body["projects"] if p["id"] == "jira:SCRUM")["board"] == 1
+
+
+def test_a_deployment_on_a_jira_project_materialises_it_once(client, monkeypatch):
+    from app import api_deployments
+
+    monkeypatch.setattr(api_deployments, "JiraClient", _JiraPortfolio)
+    created = client.post(
+        "/api/v1/deployments",
+        json={
+            "project_id": "jira:RM002",
+            "environment": "QA",
+            "version": "rm002-s7",
+            "commit_sha": "ABCDEF1",
+            "sprint_id": "9",
+            "sprint_name": "Sprint 5",
+        },
+    )
+    assert created.status_code == 201
+    doc = created.json()
+    assert doc["project_key"] == "RM002"
+    assert doc["sprint_name"] == "Sprint 5" and doc["sprint_id"] == "9"
+    assert doc["commit_sha"] == "abcdef1"  # normalised to lowercase
+
+    again = client.post(
+        "/api/v1/deployments",
+        json={"project_id": "jira:RM002", "environment": "DEV", "version": "rm002-s7b"},
+    )
+    assert again.status_code == 201
+    assert again.json()["project_id"] == doc["project_id"]
+
+    imported = [p for p in client.get("/api/v1/projects").json()["projects"] if p["key"] == "RM002"]
+    assert len(imported) == 1 and imported[0]["jira_project"] == "RM002"
+
+
+def test_a_commit_that_is_not_a_sha_is_rejected(client):
+    project = _project(client)
+    bad = client.post(
+        "/api/v1/deployments",
+        json={"project_id": project["id"], "environment": "QA", "version": "v1", "commit_sha": "not-a-sha"},
+    )
+    assert bad.status_code == 422
+    empty = client.post(
+        "/api/v1/deployments",
+        json={"project_id": project["id"], "environment": "QA", "version": "v1"},
+    )
+    assert empty.status_code == 201 and empty.json()["commit_sha"] == ""

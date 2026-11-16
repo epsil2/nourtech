@@ -243,32 +243,122 @@ def backlog(
 
 @router.get("/sprints")
 def sprints(
-    board: int = Query(default=1, ge=1),
     project: str = Query(default="SCRUM", min_length=2, max_length=20, pattern=PROJECT_PATTERN),
+    sprint: str | None = Query(default=None, max_length=32),
+    feature: str | None = Query(default=None, max_length=32, pattern=ISSUE_KEY_PATTERN),
+    story: str | None = Query(default=None, max_length=32, pattern=ISSUE_KEY_PATTERN),
+    q: str | None = Query(default=None, max_length=120),
+    board: int | None = Query(default=None, ge=1),
+    refresh: bool = Query(default=False),
+    limit: int = Query(default=MAX_ITEMS, ge=1, le=MAX_ITEMS * 2),
 ) -> dict[str, Any]:
-    """Sprints of one board plus how many issues of the project are in each."""
-    client = JiraClient()
+    """Sprints of the project's board, counted on the current selection.
+
+    The Sprints page asks a narrower question than the backlog — *which sprints
+    still carry work, and how much of it?* — so each row keeps its unfiltered
+    size (``all_issues``) next to the count that matches the selection
+    (``issues``), and the tickets of the chosen sprint come back in ``tickets``.
+    Rows are never dropped: an empty sprint still tells the operator the sprint
+    exists and was planned.
+    """
+    sprint = (sprint or "").strip() or None
+    feature = (feature or "").strip().upper() or None
+    story = (story or "").strip().upper() or None
+    needle = (q or "").strip().lower() or None
+
     try:
-        rows = client.sprints(board)
-        issues = client.board_issues(
-            f"project = {project} AND sprint IS NOT EMPTY ORDER BY updated DESC", 100
-        )
+        issues = _project_issues(project, limit, fresh=refresh)
+        client = JiraClient()
+        board_id = board
+        if board_id is None:
+            try:
+                boards = client.boards()
+                board_id = next(
+                    (int(b["id"]) for b in boards if b.get("project_key") == project), None
+                )
+            except (JiraNotConfigured, JiraError, AttributeError, TypeError, ValueError):
+                board_id = 1  # a project without an agile board still has sprints on board 1
+        rows = client.sprints(board_id) if board_id else []
     except (JiraNotConfigured, JiraError) as exc:
         raise _guard(exc) from exc
 
-    counts: dict[str, int] = {}
-    for issue in issues:
-        for sprint in issue.get("sprints", []) or []:
-            name = sprint.get("name") or "—"
-            counts[name] = counts.get(name, 0) + 1
+    facets = _facets(issues)
+    # the sprint filter must not narrow the sprint counts: if it did, choosing a
+    # sprint would zero every other row and the operator could not switch back
+    base = [i for i in issues if _matches(i, None, feature, story, needle)]
+    selected = [i for i in issues if _matches(i, sprint, feature, story, needle)]
 
+    matching: dict[str, int] = {}
+    done: dict[str, int] = {}
+    for issue in base:
+        closed = (issue.get("status") or "").strip().lower() in {"done", "closed", "terminé", "terminée"}
+        for row in issue.get("sprints") or []:
+            sid = str(row.get("id") or "")
+            if not sid:
+                continue
+            matching[sid] = matching.get(sid, 0) + 1
+            if closed:
+                done[sid] = done.get(sid, 0) + 1
+
+    by_id = {f["id"]: f for f in facets["sprints"]}
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for row in rows:
-        row["issues"] = counts.get(row.get("name") or "", 0)
-    active = [r for r in rows if r.get("state") == "active"]
+        sid = str(row.get("id") or "")
+        seen.add(sid)
+        facet = by_id.get(sid) or {}
+        items.append(
+            {
+                **row,
+                "issues": matching.get(sid, 0),
+                "all_issues": facet.get("issues", 0),
+                "done": done.get(sid, 0),
+            }
+        )
+    # a sprint the board no longer returns but whose tickets still point at it
+    for facet in facets["sprints"]:
+        if facet["id"] in seen:
+            continue
+        items.append(
+            {
+                "id": facet["id"],
+                "name": facet["name"],
+                "state": facet["state"],
+                "start": None,
+                "end": None,
+                "issues": matching.get(facet["id"], 0),
+                "all_issues": facet["issues"],
+                "done": done.get(facet["id"], 0),
+            }
+        )
+
+    order = {"active": 0, "future": 1, "closed": 2}
+    items.sort(
+        key=lambda s: (
+            order.get(str(s.get("state") or ""), 3),
+            str(s.get("start") or ""),
+            str(s.get("name") or ""),
+        )
+    )
+    active = next((s for s in items if s.get("state") == "active"), None)
     return {
-        "board": board,
         "project": project,
-        "items": rows,
-        "count": len(rows),
-        "active": active[0] if active else None,
+        "board": board_id,
+        "items": items,
+        "count": len(items),
+        "active": active,
+        "total": len(issues),
+        "matching": len(selected),
+        "selected": len(base),
+        "unscheduled": sum(1 for i in base if not (i.get("sprints") or [])),
+        "tickets": selected,
+        "facets": facets,
+        "filters": {
+            "sprint": sprint,
+            "feature": feature,
+            "story": story,
+            "q": needle,
+            "active": sum(1 for v in (sprint, feature, story, needle) if v),
+        },
     }
+

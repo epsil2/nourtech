@@ -345,3 +345,39 @@ def test_patch_without_fields_is_422_and_unknown_agent_is_404(client):
     created = client.post("/api/v1/agents", json={"name": "gamma", "description": ""}).json()
     assert client.patch(f"/api/v1/agents/{created['id']}", json={}).status_code == 422
     assert client.patch("/api/v1/agents/00000000-0000-0000-0000-000000000000", json={"description": "x"}).status_code == 404
+
+
+# -- sprint filtering (project / sprint / feature / user story) -----------
+def test_sprints_count_the_selection_not_the_whole_board(client, monkeypatch):
+    """A sprint row must say how much of the *current* selection it holds."""
+    _fresh()
+    monkeypatch.setattr("app.api_jira_board.JiraClient", FilterJira)
+    body = client.get("/api/v1/integrations/jira/board/sprints?project=SCRUM&feature=SCRUM-100").json()
+
+    assert body["project"] == "SCRUM" and body["board"] == 1
+    assert body["filters"]["active"] == 1 and body["matching"] == 3
+    sprint_six = next(s for s in body["items"] if str(s["id"]) == "10")
+    assert sprint_six["issues"] == 1 and sprint_six["all_issues"] == 1
+    # an untouched sprint stays listed with a zero: the plan is still visible
+    sprint_one = next(s for s in body["items"] if str(s["id"]) == "5")
+    assert sprint_one["issues"] == 0
+
+
+def test_choosing_a_sprint_lists_only_its_tickets(client, monkeypatch):
+    _fresh()
+    monkeypatch.setattr("app.api_jira_board.JiraClient", FilterJira)
+    body = client.get("/api/v1/integrations/jira/board/sprints?project=SCRUM&sprint=10").json()
+
+    assert [t["key"] for t in body["tickets"]] == ["SCRUM-101"]
+    assert body["matching"] == 1
+    assert body["unscheduled"] == 3
+
+
+def test_the_backlog_sentinel_lists_the_unscheduled_tickets(client, monkeypatch):
+    _fresh()
+    monkeypatch.setattr("app.api_jira_board.JiraClient", FilterJira)
+    body = client.get("/api/v1/integrations/jira/board/sprints?project=SCRUM&sprint=none").json()
+
+    keys = sorted(t["key"] for t in body["tickets"])
+    assert keys == ["SCRUM-100", "SCRUM-102", "SCRUM-103"]
+    assert body["matching"] == body["unscheduled"] == 3

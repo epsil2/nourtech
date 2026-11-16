@@ -10,13 +10,15 @@ carrying evidence.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from . import security
+from .jira import JiraClient, JiraError, JiraNotConfigured
 from .redaction import redact
 
 router = APIRouter(tags=["deployments"])
@@ -39,12 +41,23 @@ def _now() -> str:
 
 
 class DeploymentIn(BaseModel):
-    project_id: str
+    project_id: str = Field(min_length=1, max_length=80)
     environment: str = Field(max_length=10)
     version: str = Field(min_length=1, max_length=80)
     commit_sha: str = Field(default="", max_length=40)
     release_id: str | None = None
+    sprint_id: str = Field(default="", max_length=32)
+    sprint_name: str = Field(default="", max_length=120)
     note: str = Field(default="", max_length=400)
+
+    @field_validator("commit_sha")
+    @classmethod
+    def _commit_is_a_sha(cls, value: str) -> str:
+        """Empty means "whatever the pipeline publishes"; anything else is a sha."""
+        commit = (value or "").strip().lower()
+        if commit and not re.fullmatch(r"[0-9a-f]{7,40}", commit):
+            raise ValueError("commit_sha must be 7 to 40 hexadecimal characters, or empty")
+        return commit
 
 
 class ConfirmIn(BaseModel):
@@ -72,12 +85,105 @@ def list_deployments(request: Request, project_id: str | None = None, limit: int
     return {"deployments": rows, "total": len(rows)}
 
 
+@router.get("/api/v1/deployments/projects")
+def deployment_projects(request: Request) -> dict[str, Any]:
+    """Every project a deployment may target.
+
+    Camilia's own project rows are the ones a deployment is stored against, but
+    the control plane starts empty while Jira already knows the real portfolio.
+    An empty drop-down is a bug the operator cannot fix from the page, so the
+    Jira projects are listed too — as ``jira:KEY`` — and materialised as a
+    Camilia project the first time a deployment targets them.
+    """
+    store = _store(request)
+    rows = store.cp_list("project", limit=200)
+    items: list[dict[str, Any]] = []
+    known: set[str] = set()
+    for row in rows:
+        key = str(row.get("jira_project") or row.get("key") or "").upper()
+        known.add(key)
+        items.append(
+            {
+                "id": row["id"],
+                "key": row.get("key"),
+                "name": row.get("name"),
+                "jira_project": row.get("jira_project") or key or None,
+                "source": "camilia",
+                "board": None,
+            }
+        )
+
+    jira_available = False
+    try:
+        client = JiraClient()
+        boards: dict[str, int] = {}
+        for board in client.boards():
+            project_key = str(board.get("project_key") or "").upper()
+            if project_key and project_key not in boards:
+                boards[project_key] = int(board["id"])
+        for project in client.projects():
+            jira_available = True
+            key = str(project.get("key") or "").upper()
+            if not key or key in known:
+                continue
+            items.append(
+                {
+                    "id": f"jira:{key}",
+                    "key": key,
+                    "name": project.get("name") or key,
+                    "jira_project": key,
+                    "source": "jira",
+                    "board": boards.get(key),
+                }
+            )
+    except (JiraNotConfigured, JiraError, AttributeError, TypeError, ValueError):
+        # Jira down or unconfigured must not empty a page the operator needs
+        jira_available = False
+
+    items.sort(key=lambda row: (str(row.get("source")), str(row.get("key") or "")))
+    return {"projects": items, "count": len(items), "jira": jira_available}
+
+
+def _resolve_project(store: Any, identifier: str, request: Request) -> dict[str, Any]:
+    """Accept a Camilia project id or a ``jira:KEY`` handle."""
+    if identifier.startswith("jira:"):
+        key = identifier.split(":", 1)[1].strip().upper()
+        if not re.fullmatch(r"[A-Z][A-Z0-9]{1,19}", key):
+            raise HTTPException(status_code=422, detail="jira project key is not a Jira key")
+        existing = [p for p in store.cp_list("project", limit=200) if str(p.get("jira_project") or "").upper() == key]
+        if existing:
+            return existing[0]
+        name = key
+        try:
+            found = [p for p in JiraClient().projects() if str(p.get("key") or "").upper() == key]
+            if found:
+                name = str(found[0].get("name") or key)
+        except (JiraNotConfigured, JiraError):
+            pass  # the key is enough to store the request; the name is cosmetic
+        project = store.cp_save(
+            "project",
+            {
+                "key": key,
+                "name": name[:120],
+                "jira_project": key,
+                "status": "draft",
+                "stage": "deployment",
+                "source": "jira",
+            },
+        )
+        store.add_audit(_actor(request), "project.imported_from_jira", "project", project["id"], {"key": key})
+        return project
+
+    project = store.cp_get("project", identifier)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    return project
+
+
 @router.post("/api/v1/deployments", status_code=201)
 def request_deployment(payload: DeploymentIn, request: Request) -> dict[str, Any]:
     store = _store(request)
-    project = store.cp_get("project", payload.project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="project not found")
+    project = _resolve_project(store, payload.project_id, request)
     environment = payload.environment.strip().upper()
     if environment not in ENVIRONMENTS:
         raise HTTPException(status_code=422, detail=f"environment must be one of {', '.join(ENVIRONMENTS)}")
@@ -85,25 +191,33 @@ def request_deployment(payload: DeploymentIn, request: Request) -> dict[str, Any
     deployment = store.cp_save(
         "deployment",
         {
-            "project_id": payload.project_id,
+            "project_id": project["id"],
             "project_key": project.get("key"),
             "environment": environment,
             "version": payload.version[:80],
             "commit_sha": payload.commit_sha[:40],
             "release_id": payload.release_id,
+            "sprint_id": payload.sprint_id[:32],
+            "sprint_name": payload.sprint_name[:120],
             "note": payload.note[:400],
             "status": "awaiting_approval" if environment in GATED else "requested",
             "requested_by": _actor(request),
             "requested_at": _now(),
         },
-        project_id=payload.project_id,
+        project_id=project["id"],
     )
     store.add_audit(
         _actor(request),
         "deployment.requested",
         "deployment",
         deployment["id"],
-        redact({"environment": environment, "version": payload.version[:80]}),
+        redact(
+            {
+                "environment": environment,
+                "version": payload.version[:80],
+                "sprint": payload.sprint_name[:120],
+            }
+        ),
     )
     return deployment
 

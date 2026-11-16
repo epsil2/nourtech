@@ -8,6 +8,7 @@ from an optimistic local guess.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -15,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from . import cp_jobs
 from .hermes_kanban import HermesError, HermesUnavailable, KanbanAdapter, map_status
+from .jira import JiraClient, JiraError, JiraNotConfigured
 from . import security
 from .redaction import redact
 
@@ -47,6 +49,107 @@ def _get_or_404(request: Request, execution_id: str) -> dict[str, Any]:
     if doc is None:
         raise HTTPException(status_code=404, detail="execution not found")
     return doc
+
+
+ISSUE_KEY = re.compile(r"^[A-Z][A-Z0-9]*-\d+$")
+
+
+def _jira() -> JiraClient | None:
+    client = JiraClient()
+    return client if client.configured else None
+
+
+def _keys_in_scope(
+    *, sprint: str | None = None, feature: str | None = None, story: str | None = None
+) -> tuple[set[str] | None, str | None]:
+    """Jira issue keys matching the selection, or (None, warning) when unknown.
+
+    `None` means "do not narrow": the caller keeps every execution rather than
+    silently showing an empty list because Jira was unreachable.
+    """
+    clauses: list[str] = []
+    for value, field in ((story, "key"), (feature, "parent")):
+        if value:
+            if not ISSUE_KEY.match(value.strip().upper()):
+                return None, f"clé Jira ignorée (format invalide) : {value}"
+            clauses.append(f"{field} = {value.strip().upper()}")
+    if sprint:
+        if not sprint.strip().isdigit():
+            return None, f"sprint ignoré (identifiant non numérique) : {sprint}"
+        clauses.append(f"sprint = {sprint.strip()}")
+
+    if not clauses:
+        return None, None
+
+    client = _jira()
+    if client is None:
+        return None, "Jira non configuré : filtre sprint/feature/user story ignoré"
+    try:
+        issues = client.board_issues(" AND ".join(clauses) + " ORDER BY key ASC", limit=500)
+    except (JiraError, JiraNotConfigured) as exc:
+        return None, f"Jira indisponible ({exc}) : filtre ignoré"
+    return {str(issue.get("key") or "").upper() for issue in issues if issue.get("key")}, None
+
+
+def _advance_jira(store, execution: dict[str, Any], targets: list[str], reason: str) -> dict[str, Any]:
+    """Move the execution's ticket through the write gate, then re-read its status.
+
+    The move goes through JiraWriter, which refuses unless JIRA_WRITE_ENABLED is
+    set and the project is allow-listed — so an execution can never move a ticket
+    the operator did not authorise. Whatever happens, the live status is read back
+    and stored: the executions list shows Jira's truth, not our intention.
+    """
+    from .jira_write import JiraWriter, JiraWriteDisabled, JiraWriteForbidden
+
+    key = str(execution.get("jira_key") or "").strip().upper()
+    if not key:
+        return {}
+    client = _jira()
+    if client is None:
+        return {}
+
+    result: dict[str, Any] = {"moved": False, "reason": "aucune cible demandée"}
+    if targets:
+        writer = JiraWriter()
+        if not writer.enabled:
+            result = {"moved": False, "reason": "écriture Jira désactivée (JIRA_WRITE_ENABLED)"}
+        else:
+            for target in targets:
+                try:
+                    moved = writer.transition(key, target)
+                except JiraWriteDisabled as exc:
+                    result = {"moved": False, "reason": str(exc)}
+                    break
+                except JiraWriteForbidden as exc:
+                    result = {"moved": False, "reason": str(exc)}
+                    break
+                except Exception as exc:  # noqa: BLE001 - a Jira hiccup must not fail the sync
+                    result = {"moved": False, "reason": str(exc)}
+                    continue
+                if moved.get("moved", True):
+                    result = {**moved, "moved": True, "to": moved.get("to") or target}
+                    break
+                result = moved
+
+    status = None
+    try:
+        status = client.issue_status(key).get("status")
+    except (JiraError, JiraNotConfigured):
+        status = None
+
+    _event(
+        store,
+        execution,
+        "jira",
+        f"{key} · {reason} · "
+        + (f"→ {result.get('to')}" if result.get("moved") else str(result.get("reason") or "inchangé"))
+        + (f" · statut Jira : {status}" if status else ""),
+        {"targets": targets, **result},
+    )
+    fields: dict[str, Any] = {"jira_status": status, "jira_synced_at": _now()}
+    if result.get("moved"):
+        fields["jira_transitioned_to"] = result.get("to")
+    return store.cp_patch("execution", execution["id"], fields) or {}
 
 
 def _event(store, execution: dict[str, Any], kind: str, message: str, payload: dict[str, Any] | None = None) -> None:
@@ -92,6 +195,10 @@ class ExecutionIn(BaseModel):
     objective: str = Field(min_length=5, max_length=2000)
     agent_id: str | None = None
     jira_key: str | None = None
+    sprint_id: str | None = Field(default=None, max_length=40)
+    sprint_name: str | None = Field(default=None, max_length=120)
+    feature_key: str | None = Field(default=None, max_length=40)
+    story_key: str | None = Field(default=None, max_length=40)
     context: str | None = Field(default=None, max_length=8000)
     max_runtime: str = Field(default="30m", max_length=10)
     max_retries: int = Field(default=1, ge=0, le=5)
@@ -103,9 +210,42 @@ class CancelIn(BaseModel):
 
 
 @router.get("/api/v1/executions")
-def list_executions(request: Request, project_id: str | None = None, limit: int = 50) -> dict[str, Any]:
+def list_executions(
+    request: Request,
+    project_id: str | None = None,
+    sprint: str | None = None,
+    feature: str | None = None,
+    story: str | None = None,
+    q: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Executions, narrowed by the same four filters as the backlog.
+
+    Sprint / feature / user story are Jira notions: we resolve them to a set of
+    issue keys once, then keep the executions whose ticket belongs to that set.
+    Resolving a filter never fails the request — an unreachable Jira simply
+    leaves the list unfiltered and says so in `warnings`.
+    """
     rows = _store(request).cp_list("execution", project_id=project_id, limit=min(max(limit, 1), 200))
-    return {"executions": rows, "total": len(rows)}
+    warnings: list[str] = []
+
+    keys, warning = _keys_in_scope(sprint=sprint, feature=feature, story=story)
+    if warning:
+        warnings.append(warning)
+    if keys is not None:
+        rows = [row for row in rows if str(row.get("jira_key") or "").upper() in keys]
+    if sprint and keys is None and sprint.isdigit():
+        rows = [row for row in rows if str(row.get("sprint_id") or "") == sprint]
+    if q and q.strip():
+        needle = q.strip().lower()
+        rows = [
+            row
+            for row in rows
+            if needle in str(row.get("objective") or "").lower()
+            or needle in str(row.get("jira_key") or "").lower()
+            or needle in str(row.get("agent_id") or "").lower()
+        ]
+    return {"executions": rows, "total": len(rows), "warnings": warnings}
 
 
 @router.get("/api/v1/executions/engine")
@@ -119,6 +259,24 @@ def engine_status() -> dict[str, Any]:
 def create_execution(payload: ExecutionIn, request: Request) -> dict[str, Any]:
     store = _store(request)
     project = store.cp_get("project", payload.project_id)
+    if project is None and payload.project_id.startswith("jira:"):
+        # A Jira project picked in the dropdown has no Camilia row yet: create it
+        # on first use so executions can be launched straight from the backlog.
+        key = payload.project_id.split(":", 1)[1].strip().upper()
+        if not ISSUE_KEY.match(f"{key}-1"):
+            raise HTTPException(status_code=422, detail="invalid Jira project key")
+        project = store.cp_save(
+            "project",
+            {
+                "key": key,
+                "name": key,
+                "jira_project": key,
+                "status": "active",
+                "stage": "delivery",
+                "business_request": "Importé depuis Jira au lancement d'une exécution",
+            },
+        )
+        store.add_audit(_actor(request), "project.imported_from_jira", "project", project["id"], {"key": key})
     if project is None:
         raise HTTPException(status_code=404, detail="project not found")
 
@@ -141,7 +299,11 @@ def create_execution(payload: ExecutionIn, request: Request) -> dict[str, Any]:
             "project_id": payload.project_id,
             "project_key": project.get("key"),
             "agent_id": payload.agent_id,
-            "jira_key": payload.jira_key,
+            "jira_key": (payload.jira_key or "").strip().upper() or None,
+            "sprint_id": payload.sprint_id,
+            "sprint_name": payload.sprint_name,
+            "feature_key": (payload.feature_key or "").strip().upper() or None,
+            "story_key": (payload.story_key or "").strip().upper() or None,
             "objective": payload.objective[:2000],
             "context": (payload.context or "")[:8000],
             "board": board,
@@ -180,6 +342,8 @@ def create_execution(payload: ExecutionIn, request: Request) -> dict[str, Any]:
         },
     ) or execution
     _event(store, execution, "created", f"tâche kanban {task.get('id')} créée ({task.get('status')})")
+    if execution.get("jira_key"):
+        execution = _advance_jira(store, execution, ["In Progress", "In progress", "En cours"], "lancement") or execution
     store.add_audit(
         _actor(request), "execution.created", "execution", execution["id"],
         redact({"task_id": task.get("id"), "board": board}),
@@ -203,12 +367,28 @@ def create_execution(payload: ExecutionIn, request: Request) -> dict[str, Any]:
 def get_execution(execution_id: str, request: Request) -> dict[str, Any]:
     store = _store(request)
     execution = _get_or_404(request, execution_id)
+    # The ticket's live status is what the delivery team reads: refresh it on
+    # open, but never let an unreachable Jira hide the execution itself.
+    jira = None
+    if execution.get("jira_key"):
+        client = _jira()
+        if client is not None:
+            try:
+                jira = client.issue_status(execution["jira_key"])
+            except (JiraError, JiraNotConfigured) as exc:
+                jira = {"key": execution["jira_key"], "status": None, "error": str(exc)}
+            else:
+                store.cp_patch(
+                    "execution",
+                    execution_id,
+                    {"jira_status": jira.get("status"), "jira_synced_at": _now()},
+                )
     events = [
         doc
         for doc in store.cp_list("execution_event", where={"execution_id": execution_id}, limit=200)
     ]
     events.sort(key=lambda d: (d.get("created_at") or "", d.get("seq") or 0))
-    return {"execution": execution, "events": events}
+    return {"execution": execution, "events": events, "jira": jira}
 
 
 @router.post("/api/v1/executions/{execution_id}/sync")
@@ -251,6 +431,15 @@ def sync_execution(execution_id: str, request: Request) -> dict[str, Any]:
         _event(store, updated, "status", f"{execution.get('status')} → {status}")
         if status in TERMINAL:
             store.add_audit("hermes", f"execution.{status}", "execution", execution_id, redact({"runs": len(runs or [])}))
+        if updated.get("jira_key"):
+            targets: list[str] = []
+            if status == "running":
+                targets = ["In Progress", "In progress", "En cours"]
+            elif status == "succeeded":
+                targets = ["Done", "Terminé", "Terminé(e)", "Closed", "Fermé"]
+            else:
+                targets = []  # refresh the Jira status without moving the ticket
+            updated = _advance_jira(store, updated, targets, f"statut {status}") or updated
     latest = runs[-1] if isinstance(runs, list) and runs else None
     if isinstance(latest, dict):
         summary = redact(str(latest.get("summary") or latest.get("outcome") or "sans résumé"))[:200]

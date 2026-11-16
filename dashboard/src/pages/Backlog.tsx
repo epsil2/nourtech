@@ -258,9 +258,21 @@ export function Backlog() {
         {data.state === "loading" && !items.length ? (
           <Loading rows={5} />
         ) : items.length === 0 ? (
-          <Empty>Aucun ticket ne correspond à cette sélection.</Empty>
+          <Empty>
+            Aucun ticket ne correspond à cette sélection
+            {activeFilters ? ` (${activeFilters} filtre(s) actif(s))` : ""}. Un ticket ne peut pas être à la
+            fois dans le sprint choisi et dans la user story choisie si celle-ci est planifiée ailleurs —
+            élargissez le sprint ou retirez la user story.
+            {activeFilters ? (
+              <div style={{ marginTop: 10 }}>
+                <button className="btn sm" onClick={reset} type="button">
+                  Réinitialiser les filtres
+                </button>
+              </div>
+            ) : null}
+          </Empty>
         ) : (
-          <table className="tbl">
+          <table className="tbl tbl-wide">
             <thead>
               <tr>
                 <th>Clé</th>
@@ -286,7 +298,7 @@ export function Backlog() {
                     )}
                   </td>
                   <td>{i.type ?? "—"}</td>
-                  <td>{i.summary}</td>
+                  <td className="col-summary">{i.summary}</td>
                   <td>
                     <Tag tone={statusTone(i.status ?? "")}>{i.status ?? "—"}</Tag>
                   </td>

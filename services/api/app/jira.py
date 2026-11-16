@@ -231,6 +231,30 @@ class JiraClient:
             for t in body.get("transitions", []) or []
         ]
 
+    def issue_status(self, key: str) -> dict[str, Any]:
+        """Live status of one issue — what Camilia shows next to an execution."""
+        body = self._get(
+            f"/rest/api/3/issue/{urllib.parse.quote(key)}",
+            {"fields": "status,assignee,summary,updated,resolution"},
+        )
+        fields = body.get("fields") or {}
+        status = fields.get("status") or {}
+        category = status.get("statusCategory") or {}
+        assignee = fields.get("assignee") or {}
+        return {
+            "key": body.get("key") or key,
+            "status": status.get("name"),
+            "category": category.get("name"),
+            "assignee": assignee.get("displayName"),
+            "summary": fields.get("summary"),
+            "updated": (fields.get("updated") or "")[:19],
+            "url": f"{self.base_url}/browse/{key}" if self.base_url else None,
+        }
+
+    def set_status(self, key: str, targets: list[str]) -> dict[str, Any]:
+        """Reads only here: moving a ticket is JiraWriter's job (write gate)."""
+        return {"moved": False, "reason": "use JiraWriter.transition() to move a ticket"}
+
     def fields(self, limit: int = 200) -> list[dict[str, Any]]:
         body = self._get("/rest/api/3/field")
         return [
