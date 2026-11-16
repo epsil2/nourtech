@@ -514,6 +514,38 @@ def github_repo_exists(full_name: str) -> dict[str, Any] | None:
     return None
 
 
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]+")
+
+
+def repo_description(text: str, limit: int = 350) -> str:
+    """Flatten a project description into something GitHub accepts.
+
+    The project description is multi-line markdown, and GitHub rejects any control
+    character in a repository description — newlines included — with
+    `422 description control characters are not allowed`. Provisioning stopped on
+    that alone, so the text is flattened here, once, before it is sent.
+    """
+    flattened = " ".join(_CONTROL_CHARS.sub(" ", text or "").split())
+    return flattened[:limit].strip()
+
+
+def _github_message(payload: Any) -> str:
+    """GitHub states the real cause in `errors[]`; `message` alone says nothing."""
+    if not isinstance(payload, dict):
+        return str(payload)
+    message = str(payload.get("message") or "").strip()
+    details = [
+        str(item.get("message") or item.get("code") or "").strip()
+        for item in (payload.get("errors") or [])
+        if isinstance(item, dict)
+    ]
+    details = list(dict.fromkeys(detail for detail in details if detail))
+    if not details:
+        return message
+    joined = "; ".join(details)
+    return f"{message} ({joined})" if message else joined
+
+
 def github_create_repo(name: str, *, private: bool = True, description: str = "") -> dict[str, Any]:
     owner = github_owner()
     full_name = f"{owner}/{name}"
@@ -528,7 +560,7 @@ def github_create_repo(name: str, *, private: bool = True, description: str = ""
         }
     body = {
         "name": name,
-        "description": description[:350],
+        "description": repo_description(description),
         "private": private,
         "auto_init": True,
         "has_issues": True,
@@ -537,8 +569,22 @@ def github_create_repo(name: str, *, private: bool = True, description: str = ""
     }
     status, payload = _http("POST", "https://api.github.com/user/repos", headers=github_headers(), body=body)
     if status not in (200, 201) or not isinstance(payload, dict):
-        message = payload.get("message") if isinstance(payload, dict) else payload
-        raise ProvisioningError(f"GitHub repository creation failed (HTTP {status}): {message}", evidence={"status": status})
+        detail = _github_message(payload)
+        if status == 422 and "already exists" in detail.lower():
+            # The lookup above answered 404 and the creation says the name is taken: the
+            # repository exists but the token is scoped to selected repositories.
+            raise ProvisioningError(
+                f"le dépôt {full_name} existe déjà mais le jeton GitHub ne le voit pas "
+                f"(HTTP 422: {detail}). Le jeton est limité à des dépôts sélectionnés : "
+                "élargir son accès à tous les dépôts (ou installer la GitHub App), puis "
+                "relancer — le dépôt existant sera adopté, pas recréé.",
+                retryable=False,
+                evidence={"status": status, "repository": full_name},
+            )
+        raise ProvisioningError(
+            f"GitHub repository creation failed (HTTP {status}): {detail}",
+            evidence={"status": status},
+        )
     created_full_name = payload["full_name"]
     # The repository exists, but a selected-repositories token cannot reach it afterwards.
     # Detect that here rather than at the first write, so the operator sees one clear cause.

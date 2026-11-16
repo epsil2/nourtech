@@ -29,7 +29,9 @@ class FakeWorld:
         self.issues: list[dict] = []
         self.repo_files: dict[str, dict] = {}
         self.fail_github_create = False
+        self.github_create_error: tuple[int, dict] | None = None
         self.fail_ci_commit = False
+        self.repo_descriptions: list[str] = []
 
     # -- helpers ----------------------------------------------------------- #
     def count(self, method: str, needle: str) -> int:
@@ -82,6 +84,23 @@ class FakeWorld:
         if method == "POST" and path == "/user/repos":
             if self.fail_github_create:
                 return 422, {"message": "repository creation is disabled"}
+            if self.github_create_error:
+                return self.github_create_error
+            description = body.get("description") or ""
+            self.repo_descriptions.append(description)
+            # GitHub's real answer to a description holding a newline or a tab.
+            if any(ord(char) < 32 or ord(char) == 127 for char in description):
+                return 422, {
+                    "message": "Repository creation failed.",
+                    "errors": [
+                        {
+                            "resource": "Repository",
+                            "code": "custom",
+                            "field": "description",
+                            "message": "description control characters are not allowed",
+                        }
+                    ],
+                }
             full = f"epsil2/{body['name']}"
             self.repos[full] = {"full_name": full, "html_url": f"https://github.com/{full}", "default_branch": "main", "private": body["private"]}
             return 201, self.repos[full]
@@ -274,6 +293,92 @@ def test_failure_keeps_jira_and_records_the_github_error(client, world):
     assert failed and failed[0]["step"] == "create_repository"
     assert "422" in failed[0]["error"]
     assert detail["provisioning"]["failed_step"] == "create_repository"
+
+
+def test_multiline_description_reaches_github_flattened(client, world):
+    """A markdown description (newlines, tabs, CR) must not stop repository creation."""
+    response = client.post(
+        "/api/v1/factory/projects",
+        json={
+            "key": "MDESC",
+            "name": "Markdown Description",
+            "description": "Première ligne\n\nDeuxième ligne\tavec une tabulation\r\net un retour chariot",
+            "business_objective": "Prouver que la description est aplatie avant GitHub",
+            "project_type": "Backend API",
+            "business_domain": "Tests",
+            "owner": "soufiane",
+            "visibility": "private",
+            "template": "fastapi-api",
+            "requirements": "Une exigence",
+        },
+    )
+    assert response.status_code == 201, response.text
+    project_id = response.json()["project"]["project"]["id"]
+    spec_and_approve(client, project_id)
+    client.post(f"/api/v1/factory/projects/{project_id}/provision")
+
+    detail = client.get(f"/api/v1/factory/projects/{project_id}").json()
+    assert detail["state"] == "READY", detail["operations"]
+    sent = world.repo_descriptions[-1]
+    assert not any(char in sent for char in "\n\t\r")
+    assert sent.startswith("Première ligne Deuxième ligne avec une tabulation")
+
+
+def test_repo_description_is_flattened_and_capped():
+    import app.project_factory as factory
+
+    assert factory.repo_description("a\n\nb\tc") == "a b c"
+    assert factory.repo_description("  fin\n") == "fin"
+    assert factory.repo_description(None) == ""
+    assert len(factory.repo_description("x" * 900)) == 350
+
+
+def test_github_message_names_the_field_github_blamed():
+    import app.project_factory as factory
+
+    reason = factory._github_message(
+        {
+            "message": "Repository creation failed.",
+            "errors": [
+                {
+                    "resource": "Repository",
+                    "code": "custom",
+                    "field": "description",
+                    "message": "description control characters are not allowed",
+                }
+            ],
+        }
+    )
+    assert reason == "Repository creation failed. (description control characters are not allowed)"
+    assert factory._github_message("boom") == "boom"
+
+
+def test_repository_exists_but_token_cannot_see_it(client, world):
+    """A 422 'name already exists' means the repo is there and the token is blind to it."""
+    world.github_create_error = (
+        422,
+        {
+            "message": "Repository creation failed.",
+            "errors": [
+                {
+                    "resource": "Repository",
+                    "code": "custom",
+                    "field": "name",
+                    "message": "name already exists on this account",
+                }
+            ],
+        },
+    )
+    project = make_project(client, key="BLIND")
+    project_id = project["project"]["id"]
+    spec_and_approve(client, project_id)
+    client.post(f"/api/v1/factory/projects/{project_id}/provision")
+
+    detail = client.get(f"/api/v1/factory/projects/{project_id}").json()
+    assert detail["state"] == "REQUIRES_INTERVENTION"
+    failed = next(op for op in detail["operations"] if op["status"] == "failed")
+    assert "existe déjà" in failed["error"] and "422" in failed["error"]
+    assert "dépôts sélectionnés" in failed["error"]
 
 
 def test_retry_resumes_at_the_failed_step_without_recreating_jira(client, world):
