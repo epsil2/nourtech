@@ -278,7 +278,19 @@ def sprints(
                 )
             except (JiraNotConfigured, JiraError, AttributeError, TypeError, ValueError):
                 board_id = 1  # a project without an agile board still has sprints on board 1
-        rows = client.sprints(board_id) if board_id else []
+        rows: list[dict[str, Any]] = []
+        board_supports_sprints = True
+        if board_id:
+            try:
+                rows = client.sprints(board_id)
+            except JiraError as exc:
+                # A Kanban/team-managed board answers 400 "The board does not support
+                # sprints". That is a property of the board, not a credential fault:
+                # the tickets still carry their sprint field, so the page is rebuilt
+                # from the facets instead of failing whole with a misleading 502.
+                if exc.status != 400:
+                    raise
+                board_supports_sprints = False
     except (JiraNotConfigured, JiraError) as exc:
         raise _guard(exc) from exc
 
@@ -344,6 +356,7 @@ def sprints(
     return {
         "project": project,
         "board": board_id,
+        "board_supports_sprints": board_supports_sprints,
         "items": items,
         "count": len(items),
         "active": active,

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Empty, ErrorLine, Kpi, Loading, Meter, Panel, Tag, statusTone } from "../components/ui";
+import { Empty, ErrorLine, Kpi, Loading, Meter, Note, Panel, Tag, statusTone } from "../components/ui";
 import { useAsync } from "../lib/useAsync";
 import { board } from "../lib/integrations";
 import type { BacklogFacets, Sprint } from "../lib/integrations";
@@ -171,11 +171,18 @@ export function Sprints() {
         </ErrorLine>
       )}
 
+      {data.state === "ok" && data.data.board_supports_sprints === false && (
+        <Note>
+          Ce board Jira ne gère pas de sprints (board Kanban) : la liste est reconstruite depuis le champ
+          Sprint des tickets, et tout ce qui n'est pas planifié reste dans « Sans sprint ».
+        </Note>
+      )}
+
       <div className="cards">
         <Kpi
           icon="◷"
           label="Sprints"
-          value={data.state === "ok" ? String(data.data.total) : "…"}
+          value={data.state === "ok" ? String(data.data.count) : "…"}
           hint={`projet ${project}`}
         />
         <Kpi

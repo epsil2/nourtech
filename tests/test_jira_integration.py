@@ -103,3 +103,20 @@ def test_module_contains_no_mutating_http_verb():
     for verb in ('"POST"', '"PUT"', '"PATCH"', '"DELETE"', "method=\"POST"):
         assert verb not in source
     assert 'method="GET"' in source
+
+
+def test_http_error_carries_jira_message_instead_of_the_status_line():
+    """A bare "400: Bad Request" is undiagnosable: Jira names the cause in the body."""
+    import io
+    import urllib.error
+
+    body = io.BytesIO(b'{"errorMessages":["The board does not support sprints"],"errors":{}}')
+
+    def opener(request, timeout=None):
+        raise urllib.error.HTTPError(request.full_url, 400, "Bad Request", {}, body)
+
+    c = JiraClient(base_url="https://x.atlassian.net", email="e", token="t", opener=opener)
+    with pytest.raises(JiraError) as excinfo:
+        c.boards()
+    assert excinfo.value.status == 400
+    assert "The board does not support sprints" in str(excinfo.value)

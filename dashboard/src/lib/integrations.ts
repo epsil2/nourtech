@@ -80,6 +80,7 @@ export type Sprint = {
 export type SprintsPayload = {
   board: number;
   project: string;
+  board_supports_sprints: boolean;
   items: Sprint[];
   count: number;
   active: Sprint | null;

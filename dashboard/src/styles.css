@@ -305,6 +305,11 @@ h1 { font-size: 25px; letter-spacing: -0.4px; font-weight: 650; }
   border: 1px solid rgba(255, 107, 129, 0.3); border-radius: 9px; background: rgba(255, 107, 129, 0.07);
 }
 
+.note {
+  color: var(--mut); font-size: 12px; padding: 8px 10px;
+  border: 1px solid var(--line-str); border-radius: 9px; background: var(--soft);
+}
+
 /* ---------- pipeline ---------- */
 .chain { display: grid; gap: 8px; }
 .chain-step { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--soft); }

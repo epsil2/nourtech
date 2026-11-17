@@ -83,6 +83,10 @@ export function ErrorLine({ children }: { children: ReactNode }) {
   return <div className="err">⚠ {children}</div>;
 }
 
+export function Note({ children }: { children: ReactNode }) {
+  return <div className="note">ℹ {children}</div>;
+}
+
 export function Meter({ value, label, hint, tone }: { value: number; label: string; hint?: string; tone?: "warn" | "bad" }) {
   const pct = Math.max(0, Math.min(100, Math.round(value)));
   return (

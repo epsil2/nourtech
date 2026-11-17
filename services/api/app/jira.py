@@ -34,6 +34,35 @@ class JiraError(RuntimeError):
         self.status = status
 
 
+def _http_reason(exc: urllib.error.HTTPError) -> str:
+    """Jira's real cause lives in the response body, not in the status line.
+
+    ``exc.reason`` alone gives "Bad Request", which tells an operator nothing; the
+    body carries ``errorMessages`` (e.g. "The board does not support sprints") and
+    ``errors`` (field-level). Reading it is best-effort: the stream may already be
+    consumed or absent, in which case the status line is all we can report.
+    """
+    reason = str(exc.reason or "")
+    try:
+        raw = exc.read().decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001 - any unreadable body keeps the status line
+        return reason
+    try:
+        body = json.loads(raw)
+    except (ValueError, TypeError):
+        return reason
+    if not isinstance(body, dict):
+        return reason
+    messages = [str(m) for m in (body.get("errorMessages") or []) if m]
+    for field, text in (body.get("errors") or {}).items():
+        if text:
+            messages.append(f"{field}: {text}")
+    if not messages:
+        return reason
+    detail = "; ".join(messages)
+    return f"{reason} — {detail}" if reason else detail
+
+
 class JiraClient:
     """Minimal read-only client. ``opener`` is injectable for tests."""
 
@@ -79,7 +108,7 @@ class JiraClient:
             with self._opener(request, timeout=TIMEOUT) as response:
                 return json.loads(response.read().decode())
         except urllib.error.HTTPError as exc:  # 401/403/404 are expected outcomes
-            raise JiraError(exc.code, exc.reason) from exc
+            raise JiraError(exc.code, _http_reason(exc)) from exc
         except (urllib.error.URLError, TimeoutError) as exc:
             raise JiraError(0, str(exc)) from exc
 

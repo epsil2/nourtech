@@ -381,3 +381,52 @@ def test_the_backlog_sentinel_lists_the_unscheduled_tickets(client, monkeypatch)
     keys = sorted(t["key"] for t in body["tickets"])
     assert keys == ["SCRUM-100", "SCRUM-102", "SCRUM-103"]
     assert body["matching"] == body["unscheduled"] == 3
+
+
+class NoSprintBoardJira(FilterJira):
+    """A Kanban board: the Agile sprint endpoint answers 400, the tickets still exist."""
+
+    def sprints(self, board=1):
+        from app.jira import JiraError
+
+        raise JiraError(400, "Bad Request — The board does not support sprints")
+
+
+class ForbiddenSprintBoardJira(FilterJira):
+    """A real credential/permission fault must never be swallowed."""
+
+    def sprints(self, board=1):
+        from app.jira import JiraError
+
+        raise JiraError(403, "Forbidden — no permission to read the board")
+
+
+def test_a_board_without_sprints_still_answers_200_from_the_tickets(client, monkeypatch):
+    """Kanban boards answer 400 "does not support sprints": fall back, do not fail."""
+    _fresh()
+    monkeypatch.setattr("app.api_jira_board.JiraClient", NoSprintBoardJira)
+    response = client.get("/api/v1/integrations/jira/board/sprints?project=SCRUM")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["board_supports_sprints"] is False
+    assert body["count"] == 1  # rebuilt from the sprint field of the tickets
+    assert body["items"][0]["name"] == "Sprint 6"
+    assert body["items"][0]["all_issues"] == 1
+    assert body["unscheduled"] == 3
+
+
+def test_a_forbidden_board_read_is_still_reported(client, monkeypatch):
+    _fresh()
+    monkeypatch.setattr("app.api_jira_board.JiraClient", ForbiddenSprintBoardJira)
+    response = client.get("/api/v1/integrations/jira/board/sprints?project=SCRUM")
+
+    assert response.status_code == 502
+    assert "Forbidden" in response.json()["detail"]
+
+
+def test_a_scrum_board_reports_that_it_supports_sprints(client, monkeypatch):
+    _fresh()
+    monkeypatch.setattr("app.api_jira_board.JiraClient", FilterJira)
+    body = client.get("/api/v1/integrations/jira/board/sprints?project=SCRUM").json()
+    assert body["board_supports_sprints"] is True
